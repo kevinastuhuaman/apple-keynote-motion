@@ -65,7 +65,7 @@ def walk_drawable(
                 "pbtype": None,
                 "type": "unresolved",
                 "geometry": None,
-                "zero_size": False,
+                "zero_size": None,
             }
         ]
 
@@ -129,6 +129,24 @@ def paired_zero_paths(
     return sorted(source_paths & destination_paths)
 
 
+def classify_risk(
+    paired: list[str],
+    source_zero: list[dict[str, Any]],
+    destination_zero: list[dict[str, Any]],
+    fade_unmatched: bool | None,
+    indexing_incomplete: bool,
+) -> str:
+    if paired and fade_unmatched is True:
+        return "high"
+    if paired and fade_unmatched is False:
+        return "mitigated"
+    if source_zero or destination_zero:
+        return "medium"
+    if indexing_incomplete:
+        return "unknown"
+    return "none"
+
+
 def audit(deck: Path) -> dict[str, Any]:
     ordering = recover(deck)
     rows = ordering["rows"]
@@ -148,18 +166,25 @@ def audit(deck: Path) -> dict[str, Any]:
             )
             source_zero = [row for row in source_tree if row["zero_size"]]
             destination_zero = [row for row in destination_tree if row["zero_size"]]
+            unresolved = [
+                row["identifier"]
+                for row in source_tree + destination_tree
+                if row["type"] == "unresolved"
+            ]
             paired = paired_zero_paths(source_tree, destination_tree)
             fade_unmatched = transition_attributes.get(
                 "customMagicMoveFadeUnmatchedObjects"
             )
-            if paired and fade_unmatched is True:
-                severity = "high"
-            elif paired and fade_unmatched is False:
-                severity = "mitigated"
-            elif source_zero or destination_zero:
-                severity = "medium"
-            else:
-                severity = "none"
+            # Archive-wide index failures are reported for diagnostics, but only
+            # unresolved references reachable from this pair affect its risk.
+            indexing_incomplete = bool(unresolved)
+            severity = classify_risk(
+                paired,
+                source_zero,
+                destination_zero,
+                fade_unmatched,
+                indexing_incomplete,
+            )
             findings.append(
                 {
                     "source_document_slide": source_row["slide_number"],
@@ -171,6 +196,8 @@ def audit(deck: Path) -> dict[str, Any]:
                     "paired_zero_paths": paired,
                     "source_zero_size": source_zero,
                     "destination_zero_size": destination_zero,
+                    "unresolved_identifiers": sorted(set(unresolved)),
+                    "indexing_incomplete": indexing_incomplete,
                 }
             )
     return {
@@ -187,6 +214,8 @@ def audit(deck: Path) -> dict[str, Any]:
         "high_risk_pairs": sum(row["risk"] == "high" for row in findings),
         "medium_risk_pairs": sum(row["risk"] == "medium" for row in findings),
         "mitigated_pairs": sum(row["risk"] == "mitigated" for row in findings),
+        "unknown_risk_pairs": sum(row["risk"] == "unknown" for row in findings),
+        "indexing_failures": resolver.failed_index_members,
         "findings": findings,
     }
 
@@ -202,6 +231,8 @@ def write_markdown(path: Path, report: dict[str, Any]) -> None:
         f"- High-risk paired zero paths: **{report['high_risk_pairs']}**",
         f"- Medium-risk unpaired zero objects: **{report['medium_risk_pairs']}**",
         f"- Paired zero paths with Fade Unmatched disabled: **{report['mitigated_pairs']}**",
+        f"- Unknown risk due to incomplete indexing: **{report['unknown_risk_pairs']}**",
+        f"- IWA members that failed indexing: **{len(report['indexing_failures'])}**",
         "",
         "| Pair | Risk | Fade unmatched | Paired zero paths | Source zero | Destination zero |",
         "| --- | --- | --- | ---: | ---: | ---: |",
@@ -226,6 +257,17 @@ def write_markdown(path: Path, report: dict[str, Any]) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def report_summary(report: dict[str, Any], output_dir: Path) -> dict[str, Any]:
+    return {
+        "magic_move_pairs": report["magic_move_pairs"],
+        "high_risk_pairs": report["high_risk_pairs"],
+        "medium_risk_pairs": report["medium_risk_pairs"],
+        "mitigated_pairs": report["mitigated_pairs"],
+        "unknown_risk_pairs": report["unknown_risk_pairs"],
+        "output_dir": str(output_dir),
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("deck", type=Path)
@@ -241,13 +283,7 @@ def main() -> None:
     write_markdown(output_dir / "magic-move-export-risks.md", report)
     print(
         json.dumps(
-            {
-                "magic_move_pairs": report["magic_move_pairs"],
-                "high_risk_pairs": report["high_risk_pairs"],
-                "medium_risk_pairs": report["medium_risk_pairs"],
-                "mitigated_pairs": report["mitigated_pairs"],
-                "output_dir": str(output_dir),
-            },
+            report_summary(report, output_dir),
             indent=2,
         )
     )

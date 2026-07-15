@@ -18,6 +18,7 @@ import zipfile
 from collections import Counter, defaultdict
 from pathlib import Path
 
+from csv_safety import spreadsheet_safe_row
 from keynote_archive import ArchiveMember, KeynoteArchive
 
 
@@ -320,7 +321,9 @@ def main() -> int:
         writer = csv.DictWriter(f, fieldnames=["name", "size_bytes"])
         writer.writeheader()
         for info in largest_media:
-            writer.writerow({"name": info.name, "size_bytes": info.size})
+            writer.writerow(
+                spreadsheet_safe_row({"name": info.name, "size_bytes": info.size})
+            )
 
     with (out_dir / "top-video-samples.csv").open("w", newline="") as f:
         fieldnames = [
@@ -337,7 +340,7 @@ def main() -> int:
         ]
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
-        writer.writerows(video_rows)
+        writer.writerows(spreadsheet_safe_row(row) for row in video_rows)
 
     if frame_paths:
         make_contact_sheet(frame_paths, out_dir / "previews" / "top-video-frames.jpg", columns=5)

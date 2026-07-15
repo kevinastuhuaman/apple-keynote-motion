@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from csv_safety import spreadsheet_safe_row
 
 MAGIC_MOVE = "apple:magic-move-implied-motion-path"
 POSITION_TOLERANCE_RATIO = 3.0 / 1920.0
@@ -815,6 +816,108 @@ def minimum_cost_pairs(
     return sorted(pairs, key=lambda pair: (object_sort_key(pair[0]), object_sort_key(pair[1])))
 
 
+def minimum_cost_eligible_pairs(
+    source: list[dict[str, Any]],
+    dest: list[dict[str, Any]],
+    cost: Callable[[dict[str, Any], dict[str, Any]], float],
+    eligible: Callable[[dict[str, Any], dict[str, Any]], bool],
+) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+    """Maximize eligible pair count, then minimize total cost globally."""
+    if not source or not dest:
+        return []
+    left = sorted(source, key=object_sort_key)
+    right = sorted(dest, key=object_sort_key)
+    swapped = False
+    if len(left) > len(right):
+        left, right = right, left
+        swapped = True
+
+    def oriented_cost(left_obj: dict[str, Any], right_obj: dict[str, Any]) -> float:
+        return cost(right_obj, left_obj) if swapped else cost(left_obj, right_obj)
+
+    def oriented_eligible(left_obj: dict[str, Any], right_obj: dict[str, Any]) -> bool:
+        return eligible(right_obj, left_obj) if swapped else eligible(left_obj, right_obj)
+
+    edge_costs = {
+        (row, column): oriented_cost(left_obj, right_obj)
+        for row, left_obj in enumerate(left)
+        for column, right_obj in enumerate(right)
+        if oriented_eligible(left_obj, right_obj)
+    }
+    if not edge_costs:
+        return []
+
+    row_count = len(left)
+    real_column_count = len(right)
+    column_count = real_column_count + row_count
+    max_edge_magnitude = max(abs(value) for value in edge_costs.values())
+    unmatched_penalty = (max_edge_magnitude + 1.0) * (
+        row_count + real_column_count + 1
+    )
+    forbidden_penalty = unmatched_penalty * (row_count + 1)
+
+    def matrix_cost(row: int, column: int) -> float:
+        if column >= real_column_count:
+            return unmatched_penalty
+        return edge_costs.get((row, column), forbidden_penalty)
+
+    potentials_rows = [0.0] * (row_count + 1)
+    potentials_columns = [0.0] * (column_count + 1)
+    assignment = [0] * (column_count + 1)
+    previous_column = [0] * (column_count + 1)
+
+    for row_index in range(1, row_count + 1):
+        assignment[0] = row_index
+        current_column = 0
+        minimum_values = [math.inf] * (column_count + 1)
+        used = [False] * (column_count + 1)
+        while True:
+            used[current_column] = True
+            current_row = assignment[current_column]
+            delta = math.inf
+            next_column = 0
+            for column_index in range(1, column_count + 1):
+                if used[column_index]:
+                    continue
+                reduced_cost = (
+                    matrix_cost(current_row - 1, column_index - 1)
+                    - potentials_rows[current_row]
+                    - potentials_columns[column_index]
+                )
+                if reduced_cost < minimum_values[column_index]:
+                    minimum_values[column_index] = reduced_cost
+                    previous_column[column_index] = current_column
+                if minimum_values[column_index] < delta:
+                    delta = minimum_values[column_index]
+                    next_column = column_index
+            if not math.isfinite(delta):
+                raise AnalysisError("Could not compute an eligible matching assignment")
+            for column_index in range(column_count + 1):
+                if used[column_index]:
+                    potentials_rows[assignment[column_index]] += delta
+                    potentials_columns[column_index] -= delta
+                else:
+                    minimum_values[column_index] -= delta
+            current_column = next_column
+            if assignment[current_column] == 0:
+                break
+        while True:
+            next_column = previous_column[current_column]
+            assignment[current_column] = assignment[next_column]
+            current_column = next_column
+            if current_column == 0:
+                break
+
+    pairs: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for column_index in range(1, real_column_count + 1):
+        row_index = assignment[column_index]
+        if row_index and (row_index - 1, column_index - 1) in edge_costs:
+            left_obj = left[row_index - 1]
+            right_obj = right[column_index - 1]
+            pairs.append((right_obj, left_obj) if swapped else (left_obj, right_obj))
+    return sorted(pairs, key=lambda pair: (object_sort_key(pair[0]), object_sort_key(pair[1])))
+
+
 def remove_pairs(
     source: list[dict[str, Any]],
     dest: list[dict[str, Any]],
@@ -920,49 +1023,38 @@ def match_objects(
     if index_matches:
         methods["anonymous_index"] += len(index_matches)
 
-    candidates: list[tuple[float, tuple[Any, ...], tuple[Any, ...], dict[str, Any], dict[str, Any], str]] = []
     average_diagonal = (source_size.diagonal + dest_size.diagonal) / 2.0
-    for source_obj in remaining_source:
+
+    def eligible_anonymous_geometry(
+        source_obj: dict[str, Any], dest_obj: dict[str, Any]
+    ) -> bool:
         if (
             source_obj["object_type"] not in ANONYMOUS_MATCH_TYPES
             or source_obj["identity_key"]
             or source_obj["object_name_key"]
         ):
-            continue
-        for dest_obj in remaining_dest:
-            if (
-                dest_obj["object_type"] != source_obj["object_type"]
-                or dest_obj["identity_key"]
-                or dest_obj["object_name_key"]
-            ):
-                continue
-            distance = pair_distance(source_obj, dest_obj, source_size, dest_size)
-            distance_ratio = math.inf if distance is None else distance / average_diagonal
-            size_delta = normalized_size_delta(source_obj, dest_obj, source_size, dest_size)
-            geometry_near = distance_ratio <= 0.12 and size_delta <= 0.20
-            if not geometry_near:
-                continue
-            cost = match_cost(source_obj, dest_obj, source_size, dest_size)
-            candidates.append(
-                (
-                    cost,
-                    object_sort_key(source_obj),
-                    object_sort_key(dest_obj),
-                    source_obj,
-                    dest_obj,
-                    "anonymous_geometry",
-                )
-            )
-    used_source: set[int] = set()
-    used_dest: set[int] = set()
-    heuristic_matches: list[tuple[dict[str, Any], dict[str, Any]]] = []
-    for _, _, _, source_obj, dest_obj, method in sorted(candidates, key=lambda item: item[:3]):
-        if id(source_obj) in used_source or id(dest_obj) in used_dest:
-            continue
-        used_source.add(id(source_obj))
-        used_dest.add(id(dest_obj))
-        heuristic_matches.append((source_obj, dest_obj))
-        methods[method] += 1
+            return False
+        if (
+            dest_obj["object_type"] != source_obj["object_type"]
+            or dest_obj["identity_key"]
+            or dest_obj["object_name_key"]
+        ):
+            return False
+        distance = pair_distance(source_obj, dest_obj, source_size, dest_size)
+        distance_ratio = math.inf if distance is None else distance / average_diagonal
+        size_delta = normalized_size_delta(source_obj, dest_obj, source_size, dest_size)
+        return distance_ratio <= 0.12 and size_delta <= 0.20
+
+    heuristic_matches = minimum_cost_eligible_pairs(
+        remaining_source,
+        remaining_dest,
+        lambda source_obj, dest_obj: match_cost(
+            source_obj, dest_obj, source_size, dest_size
+        ),
+        eligible_anonymous_geometry,
+    )
+    if heuristic_matches:
+        methods["anonymous_geometry"] += len(heuristic_matches)
     matches.extend(heuristic_matches)
     remaining_source, remaining_dest = remove_pairs(
         remaining_source, remaining_dest, heuristic_matches
@@ -1157,7 +1249,11 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
             writer = csv.DictWriter(handle, fieldnames=OUTPUT_FIELDS)
             writer.writeheader()
             for row in rows:
-                writer.writerow({field: row.get(field, "") for field in OUTPUT_FIELDS})
+                writer.writerow(
+                    spreadsheet_safe_row(
+                        {field: row.get(field, "") for field in OUTPUT_FIELDS}
+                    )
+                )
     except OSError as exc:
         raise AnalysisError(f"Could not write CSV {path}: {exc}") from exc
 

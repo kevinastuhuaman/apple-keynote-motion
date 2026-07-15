@@ -18,11 +18,16 @@ import zipfile
 from collections import Counter
 from pathlib import Path
 
+from csv_safety import spreadsheet_safe_row
 from keynote_archive import KeynoteArchive
 from keynote_effects import TRANSITION_EFFECTS
 
 
 PRINTABLE_RE = re.compile(rb"[\x20-\x7e]{4,}")
+MAX_DECODED_CHUNK_BYTES = 256 * 1024 * 1024
+MAX_DECODED_IWA_BYTES = 512 * 1024 * 1024
+
+
 class Snappy:
     def __init__(self) -> None:
         lib_path = ctypes.util.find_library("snappy") or "/opt/homebrew/lib/libsnappy.dylib"
@@ -53,6 +58,11 @@ class Snappy:
         rc = self.lib.snappy_uncompressed_length(data, len(data), ctypes.byref(out_len))
         if rc != 0:
             raise RuntimeError(f"snappy_uncompressed_length failed: {rc}")
+        if out_len.value > MAX_DECODED_CHUNK_BYTES:
+            raise RuntimeError(
+                "decoded Snappy chunk exceeds the 256 MiB safety limit: "
+                f"{out_len.value} bytes"
+            )
         out = ctypes.create_string_buffer(out_len.value)
         rc = self.lib.snappy_uncompress(data, len(data), out, ctypes.byref(out_len))
         if rc != 0:
@@ -62,14 +72,26 @@ class Snappy:
 
 def decompress_iwa(data: bytes, snappy: Snappy) -> bytes:
     pos = 0
+    decoded_size = 0
     chunks: list[bytes] = []
-    while pos + 4 <= len(data):
+    while pos < len(data):
+        if len(data) - pos < 4:
+            raise RuntimeError("truncated IWA chunk header")
         chunk_type = data[pos]
         chunk_len = data[pos + 1] | (data[pos + 2] << 8) | (data[pos + 3] << 16)
         pos += 4
+        if chunk_len > len(data) - pos:
+            raise RuntimeError(
+                f"truncated IWA chunk payload: declared {chunk_len} bytes, "
+                f"found {len(data) - pos}"
+            )
         chunk = data[pos : pos + chunk_len]
         pos += chunk_len
-        chunks.append(snappy.uncompress(chunk) if chunk_type == 0 else chunk)
+        decoded_chunk = snappy.uncompress(chunk) if chunk_type == 0 else chunk
+        decoded_size += len(decoded_chunk)
+        if decoded_size > MAX_DECODED_IWA_BYTES:
+            raise RuntimeError("decoded IWA payload exceeds the 512 MiB safety limit")
+        chunks.append(decoded_chunk)
     return b"".join(chunks)
 
 
@@ -412,7 +434,7 @@ def main() -> int:
             ],
         )
         writer.writeheader()
-        writer.writerows(result["rows"])
+        writer.writerows(spreadsheet_safe_row(row) for row in result["rows"])
 
     transition_rows = [row for row in result["rows"] if row["transition"] != "none"]
     transition_csv_path = out_dir / "transition-slides-ordered.csv"
@@ -429,7 +451,7 @@ def main() -> int:
             ],
         )
         writer.writeheader()
-        writer.writerows(transition_rows)
+        writer.writerows(spreadsheet_safe_row(row) for row in transition_rows)
 
     magic_move_csv_path = out_dir / "magic-move-slides-ordered.csv"
     with magic_move_csv_path.open("w", newline="", encoding="utf-8") as f:
@@ -446,7 +468,7 @@ def main() -> int:
         )
         writer.writeheader()
         writer.writerows(
-            row
+            spreadsheet_safe_row(row)
             for row in transition_rows
             if row["transition"] == "apple:magic-move-implied-motion-path"
         )

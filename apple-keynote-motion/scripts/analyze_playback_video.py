@@ -20,6 +20,8 @@ from typing import Any, Iterable
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
+from csv_safety import spreadsheet_safe_row
+
 
 def run_json(command: list[str]) -> dict[str, Any]:
     completed = subprocess.run(command, check=True, capture_output=True, text=True)
@@ -463,7 +465,7 @@ def write_metrics_csv(path: Path, metrics: list[dict[str, Any]]) -> None:
             box = row.get("bbox") or {}
             centroid = row.get("centroid") or {}
             writer.writerow(
-                {
+                spreadsheet_safe_row({
                     "frame": row["frame"],
                     "time_seconds": row["time_seconds"],
                     "mean_abs_diff": row["mean_abs_diff"],
@@ -475,7 +477,7 @@ def write_metrics_csv(path: Path, metrics: list[dict[str, Any]]) -> None:
                     "bbox_height": box.get("height"),
                     "centroid_x": centroid.get("x"),
                     "centroid_y": centroid.get("y"),
-                }
+                })
             )
 
 

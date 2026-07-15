@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from csv_safety import spreadsheet_safe_row
 
 def read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
@@ -131,7 +132,7 @@ def write_outputs(rows: list[dict[str, Any]], out_dir: Path) -> None:
             csv_row["rare_transitions"] = json.dumps(
                 row["rare_transitions"], sort_keys=True
             )
-            writer.writerow(csv_row)
+            writer.writerow(spreadsheet_safe_row(csv_row))
 
     lines = [
         "# Keynote Reference Corpus",

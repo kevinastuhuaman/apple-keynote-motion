@@ -13,7 +13,7 @@ Do not describe these static endpoint comparisons as frame-by-frame animation an
 
 ## 1. Hero To System
 
-Representatives: document/playback `26->27/26->27`, `118->119/118->119`, `223->224/221->222`, `380->381/377->378`.
+Representatives: document/playback `26->27/26->27`, `118->119/118->119`, `223->224/221->222`, `383->384/380->381`.
 
 A single product, device, or icon expands into a lineup or grid. Keep the original hero as the visual anchor and add context around it. Recommended for introducing an ecosystem after establishing one recognizable object.
 
@@ -37,13 +37,13 @@ A cropped interface, text field, or content detail resolves back into its contai
 
 ## 5. Progressive Product Lineup
 
-Representatives: `20->21/20->21`, `21->22/21->22`, `117->118/117->118`, `118->119/118->119`, `205->206/204->205`.
+Representatives: `20->21/20->21`, `21->22/21->22`, `117->118/117->118`, `118->119/118->119`, `206->207/205->206`.
 
 One more device or state enters while prior objects retain their relative logic. The sequence works because each click changes one variable rather than rebuilding the entire composition.
 
 ## 6. Stable Frame, Changed State
 
-Representatives: `174->175/173->174`, `175->176/174->175`, `176->177/175->176`, `177->178/176->177`.
+Representatives: `175->176/174->175`, `176->177/175->176`, `177->178/176->177`, `178->179/177->178`.
 
 The app or browser frame remains stable while a banner, call state, or content layer changes. This is the clearest comparison pattern for UI state transitions. Avoid moving the frame unless the movement itself conveys meaning.
 
@@ -55,7 +55,7 @@ People, avatars, or related objects reorganize around one dominant center. Use o
 
 ## 8. Grid Montage Expansion
 
-Representatives: `166->167/166->167`, `202->204/202->203`, `384->385/381->382`, `390->391/387->388`, `394->395/391->392`.
+Representatives: `167->168/166->167`, `203->204/202->203`, `384->385/381->382`, `390->391/387->388`, `397->398/394->395`.
 
 A product screen or small set expands into a rich montage of examples. Dense endpoints require slower timing, usually `0.8-1.25s`, and a clear persistent anchor. If every item is unmatched, a dissolve may be cleaner than forced Magic Move.
 
@@ -73,7 +73,7 @@ A product appears beside a presenter or live-action background, then becomes the
 
 ## 11. App Family Expansion
 
-Representatives: `304->305/302->303`, `305->306/303->304`, `380->381/377->378`, `381->382/378->379`, `438->440/434->436`.
+Representatives: `304->305/302->303`, `305->306/303->304`, `383->384/380->381`, `384->385/381->382`, `438->439/434->435`, `439->440/435->436`.
 
 Start with one logo or a small family, reveal the broader set, then select one hero. This creates a reliable three-beat sequence: establish, expand, refocus.
 
@@ -97,7 +97,7 @@ Previously introduced products assemble into one final lineup. Use this near a s
 
 ## 15. Quiet Reset
 
-Representatives: `35->36/35->36`, `36->37/36->37`, `124->125/124->125`, `343->344/343->344`, `399->400/399->400`.
+Representatives: `35->36/35->36`, `36->37/36->37`, `124->125/124->125`, `346->347/343->344`, `402->403/399->400`.
 
 Dissolve resets the scene when spatial continuity is weak or irrelevant. Apple uses it sparingly between related visual plates and section openings. Do not replace a meaningful transform with a dissolve merely because it is easier.
 

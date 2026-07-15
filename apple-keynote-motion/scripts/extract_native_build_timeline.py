@@ -17,6 +17,7 @@ from importlib import metadata
 from pathlib import Path
 from typing import Any, Iterable
 
+from csv_safety import spreadsheet_safe_row
 from keynote_archive import KeynoteArchive
 
 
@@ -490,6 +491,7 @@ def extract_slide_timeline(
     current_reference_order: int | None = None
     unresolved_chunks: list[str] = []
     unresolved_builds: list[str] = []
+    unresolved_targets: list[str] = []
 
     for order, chunk_identifier in enumerate(chunk_ids, start=1):
         chunk_record = records.get(chunk_identifier)
@@ -524,6 +526,8 @@ def extract_slide_timeline(
         if resolver is not None:
             resolver.hydrate(target_identifier, records)
         target = describe_target(target_identifier, records)
+        if target["type"] == "unresolved":
+            unresolved_targets.append(target_identifier or "(missing)")
         direction_code = animation.get("direction")
 
         event = {
@@ -594,6 +598,7 @@ def extract_slide_timeline(
         "events": events,
         "unresolved_chunk_references": unresolved_chunks,
         "unresolved_build_references": unresolved_builds,
+        "unresolved_target_references": sorted(set(unresolved_targets)),
     }
 
 
@@ -715,8 +720,15 @@ def summarize(slides: list[dict[str, Any]]) -> dict[str, Any]:
             Counter(str(row.get("direction_code", "(unset)")) for row in rows)
         ),
         "slides_with_unresolved_references": sum(
-            bool(slide["unresolved_chunk_references"] or slide["unresolved_build_references"])
+            bool(
+                slide["unresolved_chunk_references"]
+                or slide["unresolved_build_references"]
+                or slide.get("unresolved_target_references", [])
+            )
             for slide in slides
+        ),
+        "unresolved_target_reference_count": sum(
+            len(slide.get("unresolved_target_references", [])) for slide in slides
         ),
         "duration_seconds": {
             "min": min(durations) if durations else None,
@@ -749,7 +761,8 @@ def markdown_report(payload: dict[str, Any]) -> str:
         "",
         f"- Structural slides decoded: **{summary['slide_count']}**",
         f"- Native timeline events decoded: **{summary['event_count']}**",
-        f"- Slides with unresolved build/chunk references: **{summary['slides_with_unresolved_references']}**",
+        f"- Slides with unresolved build, chunk, or target references: **{summary['slides_with_unresolved_references']}**",
+        f"- Unresolved target references: **{summary['unresolved_target_reference_count']}**",
         f"- Duration range: **{summary['duration_seconds']['min']}s to {summary['duration_seconds']['max']}s**; median **{summary['duration_seconds']['median']}s**",
         f"- Nonzero delays: **{summary['delay_seconds']['nonzero_count']}**; maximum **{summary['delay_seconds']['max']}s**",
         "",
@@ -812,7 +825,7 @@ def write_outputs(output_dir: Path, payload: dict[str, Any], output_prefix: str)
         writer.writeheader()
         for slide in payload["slides"]:
             for event in slide["events"]:
-                writer.writerow(flatten_event(slide, event))
+                writer.writerow(spreadsheet_safe_row(flatten_event(slide, event)))
     (output_dir / f"{output_prefix}.md").write_text(
         markdown_report(payload), encoding="utf-8"
     )

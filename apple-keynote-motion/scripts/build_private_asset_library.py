@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
+from csv_safety import spreadsheet_safe_row
 from keynote_archive import ArchiveMember, KeynoteArchive
 
 
@@ -799,7 +800,6 @@ def process_deck(
                     ),
                 )
                 if (zip_index + 1) % 100 == 0 or zip_index + 1 == len(data_members):
-                    connection.commit()
                     print(f"deck {current_deck_id}: {zip_index + 1}/{len(data_members)} assets")
             finally:
                 temp_path.unlink(missing_ok=True)
@@ -867,7 +867,7 @@ def export_catalog(connection: sqlite3.Connection, output_root: Path) -> list[di
             writer.writeheader()
         for row in rows:
             raw = dict(row)
-            writer.writerow(raw)
+            writer.writerow(spreadsheet_safe_row(raw))
             item = dict(raw)
             item["tags"] = json.loads(item.pop("tags_json"))
             item["slides"] = json.loads(item.pop("slide_numbers_json"))

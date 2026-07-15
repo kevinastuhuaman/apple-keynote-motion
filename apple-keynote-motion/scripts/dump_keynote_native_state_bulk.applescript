@@ -38,6 +38,10 @@ on emitLine(fieldList)
 	return (my joinFields(fieldList) & linefeed)
 end emitLine
 
+on canonicalPath(pathText)
+	return POSIX path of ((POSIX file (pathText as text)) as alias)
+end canonicalPath
+
 on listValue(valueList, valueIndex)
 	try
 		return item valueIndex of valueList
@@ -94,6 +98,7 @@ on run argv
 			set argumentOffset to 1
 		end if
 	end if
+	if deckPath is not "" then set deckPath to my canonicalPath(deckPath)
 	set requestedStart to 1
 	set requestedEnd to 0
 	if (count of argv) is greater than or equal to (argumentOffset + 1) then set requestedStart to (item (argumentOffset + 1) of argv) as integer
@@ -101,10 +106,12 @@ on run argv
 
 	set outputText to outputText & (my emitLine({"record", "slide_number", "object_type", "object_index", "object_name", "identity_text", "x", "y", "width", "height", "rotation", "opacity", "locked", "extra"}))
 
+	set openedHere to false
+	set docRef to missing value
 	using terms from application id "com.apple.Keynote"
 		tell application id "com.apple.Keynote"
-			with timeout of 3600 seconds
-				set openedHere to false
+			try
+				with timeout of 3600 seconds
 				if deckPath is "" then
 					set docRef to front document
 				else
@@ -201,8 +208,16 @@ on run argv
 						set outputText to outputText & (my emitBulkObjects(slideIndex, "audio clip", objectCount, {}, file name of every audio clip of slideRef, position of every audio clip of slideRef, width of every audio clip of slideRef, height of every audio clip of slideRef, rotation of every audio clip of slideRef, {}, locked of every audio clip of slideRef, clip volume of every audio clip of slideRef))
 					end if
 				end repeat
-				if openedHere then close docRef saving no
-			end timeout
+				end timeout
+			on error errorMessage number errorNumber
+				if openedHere and docRef is not missing value then
+					try
+						close docRef saving no
+					end try
+				end if
+				error errorMessage number errorNumber
+			end try
+			if openedHere and docRef is not missing value then close docRef saving no
 		end tell
 	end using terms from
 	return outputText

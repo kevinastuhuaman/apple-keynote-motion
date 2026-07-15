@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import csv
 import io
+import inspect
 import json
+import re
 import sqlite3
+import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import zipfile
 from pathlib import Path
@@ -18,12 +22,18 @@ SKILL_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = SKILL_ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
+import audit_magic_move_export_risks as magic_move_audit  # noqa: E402
 from apply_slide_transitions import (  # noqa: E402
     build_script,
     copy_deck,
     ui_controls_still_required,
 )
 from analyze_keynote_reference import main as analyze_keynote_reference_main  # noqa: E402
+from analyze_native_motion import (  # noqa: E402
+    Snappy as NativeMotionSnappy,
+    analyze as analyze_native_motion_archive,
+    decompress_iwa as decompress_native_iwa,
+)
 from build_private_asset_library import (  # noqa: E402
     Detection,
     classify_asset_name,
@@ -31,6 +41,7 @@ from build_private_asset_library import (  # noqa: E402
     detect_file_kind,
     index_package_metadata,
     media_metadata,
+    process_deck,
     recover_utf8_zip_name,
     write_summary,
 )
@@ -39,6 +50,7 @@ from analyze_transition_object_diffs import (  # noqa: E402
     SlideSize,
     load_objects,
     match_cost,
+    minimum_cost_eligible_pairs,
 )
 from analyze_playback_video import (  # noqa: E402
     boolean_runs,
@@ -50,8 +62,10 @@ from analyze_playback_video import (  # noqa: E402
 )
 from analyze_text_motion_layers import text_objects_for_slide  # noqa: E402
 from audit_magic_move_export_risks import (  # noqa: E402
+    classify_risk,
     is_zero_geometry,
     paired_zero_paths,
+    report_summary,
 )
 from compare_playback_motion import compare_payloads  # noqa: E402
 from extract_native_build_timeline import (  # noqa: E402
@@ -59,13 +73,24 @@ from extract_native_build_timeline import (  # noqa: E402
     describe_target,
     load_slide_order_rows,
     merge_patch_dict,
+    summarize as summarize_build_timeline,
 )
+from csv_safety import spreadsheet_safe, spreadsheet_safe_row  # noqa: E402
 from keynote_archive import KeynoteArchive  # noqa: E402
 from make_build_stage_storyboards import discover_pages  # noqa: E402
 from make_transition_storyboards import load_pairs  # noqa: E402
-from map_build_stages import monotonic_alignment, stage_kind  # noqa: E402
+from map_build_stages import (  # noqa: E402
+    confidence,
+    monotonic_alignment,
+    render_pdf_pages,
+    stage_kind,
+)
 from patch_build_start_relationship import START_FLAGS, patch_deck  # noqa: E402
-from recover_slide_order import first_ref_field, slide_transition_and_topic  # noqa: E402
+from recover_slide_order import (  # noqa: E402
+    decompress_iwa as decompress_order_iwa,
+    first_ref_field,
+    slide_transition_and_topic,
+)
 from summarize_keynote_corpus import build_rows  # noqa: E402
 from validate_motion_spec import validate  # noqa: E402
 
@@ -1205,6 +1230,328 @@ class PrivateAssetLibraryTests(unittest.TestCase):
         relation = index["relations_by_data_id"]["12"][0]
         self.assertEqual(relation["locator"], "Slide-90")
         self.assertEqual(relation["object_ids"], ["91"])
+
+
+class FinalReviewRegressionTests(unittest.TestCase):
+    def test_iwa_decoders_reject_truncated_headers_and_payloads(self) -> None:
+        decoder = Mock()
+        decoder.uncompress.side_effect = lambda value: value
+        for decompress in (decompress_native_iwa, decompress_order_iwa):
+            with self.subTest(decompress=decompress.__module__, case="header"):
+                with self.assertRaisesRegex(RuntimeError, "truncated IWA chunk header"):
+                    decompress(b"\x01\x00\x00", decoder)
+            with self.subTest(decompress=decompress.__module__, case="payload"):
+                with self.assertRaisesRegex(RuntimeError, "truncated IWA chunk payload"):
+                    decompress(b"\x01\x05\x00\x00ab", decoder)
+
+    def test_iwa_decoders_bound_the_total_decoded_payload(self) -> None:
+        decoder = Mock()
+        decoder.uncompress.side_effect = lambda value: value
+        framed = b"\x01\x02\x00\x00ab" + b"\x01\x02\x00\x00cd"
+        for module, decompress in (
+            ("analyze_native_motion", decompress_native_iwa),
+            ("recover_slide_order", decompress_order_iwa),
+        ):
+            with self.subTest(module=module):
+                with patch(f"{module}.MAX_DECODED_IWA_BYTES", 3):
+                    with self.assertRaisesRegex(RuntimeError, "safety limit"):
+                        decompress(framed, decoder)
+
+    def test_snappy_rejects_oversized_advertised_output(self) -> None:
+        snappy = NativeMotionSnappy.__new__(NativeMotionSnappy)
+        library = Mock()
+
+        def advertise_oversized(_data, _length, output_length) -> int:
+            output_length._obj.value = 2
+            return 0
+
+        library.snappy_uncompressed_length.side_effect = advertise_oversized
+        snappy.lib = library
+        with patch("analyze_native_motion.MAX_DECODED_CHUNK_BYTES", 1):
+            with self.assertRaisesRegex(RuntimeError, "safety limit"):
+                snappy.uncompress(b"x")
+        library.snappy_uncompress.assert_not_called()
+
+    def test_native_motion_report_uses_only_the_deck_basename(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            deck = Path(tmp) / "private-location.key"
+            with zipfile.ZipFile(deck, "w") as archive:
+                archive.writestr("Index/Document.iwa", b"document")
+            with patch("analyze_native_motion.Snappy", return_value=Mock()):
+                report = analyze_native_motion_archive(deck)
+            self.assertEqual(report["deck"], "private-location.key")
+            self.assertNotIn(tmp, report["deck"])
+
+    def test_nested_index_zip_respects_the_decompression_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            deck = Path(tmp) / "wrapped.key"
+            nested_bytes = io.BytesIO()
+            with zipfile.ZipFile(nested_bytes, "w") as nested:
+                nested.writestr("Index/Document.iwa", b"document")
+            with zipfile.ZipFile(deck, "w") as outer:
+                outer.writestr("Event.key_backup/Index.zip", nested_bytes.getvalue())
+            with patch("keynote_archive.MAX_NESTED_INDEX_BYTES", 1):
+                with self.assertRaisesRegex(ValueError, "safety limit"):
+                    with KeynoteArchive(deck):
+                        pass
+
+    def test_nested_index_zip_skips_an_oversized_decoy_candidate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            deck = Path(tmp) / "wrapped.key"
+            valid_bytes = io.BytesIO()
+            with zipfile.ZipFile(valid_bytes, "w") as nested:
+                nested.writestr("Index/Document.iwa", b"document")
+            valid_payload = valid_bytes.getvalue()
+            with zipfile.ZipFile(deck, "w") as outer:
+                outer.writestr("A.key_backup/Index.zip", b"x" * (len(valid_payload) + 1))
+                outer.writestr("B.key_backup/Index.zip", valid_payload)
+            with patch("keynote_archive.MAX_NESTED_INDEX_BYTES", len(valid_payload)):
+                with KeynoteArchive(deck) as archive:
+                    self.assertEqual(archive.layout, "wrapped-index-zip")
+                    self.assertEqual(archive.package_prefix, "B.key_backup/")
+
+    def test_magic_move_cli_summary_reports_unknown_risks(self) -> None:
+        report = {
+            "magic_move_pairs": 1,
+            "high_risk_pairs": 0,
+            "medium_risk_pairs": 0,
+            "mitigated_pairs": 0,
+            "unknown_risk_pairs": 1,
+        }
+        self.assertEqual(
+            report_summary(report, Path("audit"))["unknown_risk_pairs"],
+            1,
+        )
+
+    def test_eligible_matching_maximizes_pair_count_before_cost(self) -> None:
+        source = [
+            {"label": "A", "object_type": "shape", "object_index": 1},
+            {"label": "B", "object_type": "shape", "object_index": 2},
+        ]
+        destination = [
+            {"label": "X", "object_type": "shape", "object_index": 1},
+            {"label": "Y", "object_type": "shape", "object_index": 2},
+        ]
+        costs = {("A", "X"): 1.0, ("A", "Y"): 2.0, ("B", "X"): 1.1}
+        pairs = minimum_cost_eligible_pairs(
+            source,
+            destination,
+            lambda left, right: costs[(left["label"], right["label"])],
+            lambda left, right: (left["label"], right["label"]) in costs,
+        )
+        self.assertEqual(
+            {(left["label"], right["label"]) for left, right in pairs},
+            {("A", "Y"), ("B", "X")},
+        )
+
+    def test_eligible_matching_orients_lopsided_inputs_around_smaller_side(self) -> None:
+        source = [
+            {"label": str(index), "object_type": "shape", "object_index": index}
+            for index in range(1_000)
+        ]
+        destination = [{"label": "target", "object_type": "shape", "object_index": 1}]
+        started = time.perf_counter()
+        pairs = minimum_cost_eligible_pairs(
+            source,
+            destination,
+            lambda left, _right: float(left["object_index"]),
+            lambda _left, _right: True,
+        )
+        elapsed = time.perf_counter() - started
+        self.assertEqual(pairs[0][0]["object_index"], 0)
+        self.assertIs(pairs[0][1], destination[0])
+        self.assertLess(elapsed, 2.0)
+
+    def test_csv_safety_neutralizes_spreadsheet_formulas(self) -> None:
+        for value in ("=1+1", "+cmd", "-2+3", "@SUM(A:A)", "\t=1", "\r=1"):
+            with self.subTest(value=value):
+                self.assertEqual(spreadsheet_safe(value), "'" + value)
+        self.assertEqual(
+            spreadsheet_safe_row({"name": "=payload", "count": 2}),
+            {"name": "'=payload", "count": 2},
+        )
+
+    def test_every_csv_exporter_uses_the_spreadsheet_guard(self) -> None:
+        for path in sorted(SCRIPTS.glob("*.py")):
+            text = path.read_text(encoding="utf-8")
+            if "csv.DictWriter" in text:
+                with self.subTest(path=path.name):
+                    self.assertIn("spreadsheet_safe_row", text)
+
+    def test_asset_index_replacement_has_no_partial_commit(self) -> None:
+        self.assertNotIn("connection.commit", inspect.getsource(process_deck))
+
+    def test_incomplete_magic_move_indexing_is_never_risk_free(self) -> None:
+        self.assertEqual(classify_risk([], [], [], None, True), "unknown")
+        self.assertEqual(classify_risk([], [], [], None, False), "none")
+        self.assertEqual(classify_risk(["ownedDrawables[0]"], [], [], True, True), "high")
+
+    def test_unrelated_index_failure_does_not_taint_resolved_magic_move_pair(self) -> None:
+        archive = Mock()
+        archive_context = Mock()
+        archive_context.__enter__ = Mock(return_value=archive)
+        archive_context.__exit__ = Mock(return_value=False)
+        resolver = Mock()
+        resolver.failed_index_members = ["Index/Unrelated.iwa"]
+        rows = [
+            {
+                "slide_number": 1,
+                "archive_name": "Index/Slide-1.iwa",
+                "transition": "apple:magic-move-implied-motion-path",
+            },
+            {
+                "slide_number": 2,
+                "archive_name": "Index/Slide-2.iwa",
+                "transition": "none",
+            },
+        ]
+        with (
+            patch.object(magic_move_audit, "recover", return_value={"rows": rows}),
+            patch.object(magic_move_audit, "KeynoteArchive", return_value=archive_context),
+            patch.object(
+                magic_move_audit,
+                "CrossFileRecordResolver",
+                return_value=resolver,
+            ),
+            patch.object(
+                magic_move_audit,
+                "slide_drawable_tree",
+                side_effect=[([], {}), ([], {})],
+            ),
+        ):
+            report = magic_move_audit.audit(Path("deck.key"))
+        self.assertEqual(report["findings"][0]["risk"], "none")
+        self.assertFalse(report["findings"][0]["indexing_incomplete"])
+        self.assertEqual(report["indexing_failures"], ["Index/Unrelated.iwa"])
+
+    def test_unresolved_targets_contribute_to_timeline_coverage(self) -> None:
+        summary = summarize_build_timeline(
+            [
+                {
+                    "events": [],
+                    "unresolved_chunk_references": [],
+                    "unresolved_build_references": [],
+                    "unresolved_target_references": ["target-42"],
+                }
+            ]
+        )
+        self.assertEqual(summary["slides_with_unresolved_references"], 1)
+        self.assertEqual(summary["unresolved_target_reference_count"], 1)
+
+    def test_force_render_ignores_metadata_and_removes_stale_pages(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pdf = root / "stages.pdf"
+            pdf.touch()
+            pages = root / "pages"
+            pages.mkdir()
+            metadata = pages / ".DS_Store"
+            metadata.write_bytes(b"metadata")
+            stale = pages / "stage-page-1.jpg"
+            stale.write_bytes(b"stale")
+
+            def render_page(command: list[str], **_kwargs: object) -> None:
+                Path(command[-1] + "-1.jpg").write_bytes(b"replacement")
+
+            with (
+                patch("map_build_stages.pdf_page_count", return_value=1),
+                patch("map_build_stages.shutil.which", return_value="/usr/bin/pdftoppm"),
+                patch("map_build_stages.subprocess.run", side_effect=render_page) as run,
+            ):
+                render_pdf_pages(pdf, pages, 640, force=True)
+            self.assertEqual(stale.read_bytes(), b"replacement")
+            self.assertTrue(metadata.exists())
+            run.assert_called_once()
+
+    def test_force_render_preserves_cache_when_renderer_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pdf = root / "stages.pdf"
+            pdf.touch()
+            pages = root / "pages"
+            pages.mkdir()
+            stale = pages / "stage-page-1.jpg"
+            stale.write_bytes(b"stale")
+            with patch("map_build_stages.shutil.which", return_value=None):
+                with self.assertRaisesRegex(RuntimeError, "pdftoppm is required"):
+                    render_pdf_pages(pdf, pages, 640, force=True)
+            self.assertTrue(stale.exists())
+
+    def test_force_render_preserves_cache_when_replacement_render_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pdf = root / "stages.pdf"
+            pdf.touch()
+            pages = root / "pages"
+            pages.mkdir()
+            stale = pages / "stage-page-1.jpg"
+            stale.write_bytes(b"known-good")
+            with (
+                patch("map_build_stages.pdf_page_count", return_value=1),
+                patch("map_build_stages.shutil.which", return_value="/usr/bin/pdftoppm"),
+                patch(
+                    "map_build_stages.subprocess.run",
+                    side_effect=subprocess.CalledProcessError(1, "pdftoppm"),
+                ),
+            ):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    render_pdf_pages(pdf, pages, 640, force=True)
+            self.assertEqual(stale.read_bytes(), b"known-good")
+
+    def test_confidence_retains_absolute_quality_limits(self) -> None:
+        self.assertEqual(confidence(0.50, 0.50), "low")
+        self.assertEqual(confidence(0.10, 0.50), "medium")
+        self.assertEqual(confidence(0.07, 0.50), "high")
+
+    def test_dump_scripts_normalize_paths_and_cleanup_on_errors(self) -> None:
+        for name in (
+            "dump_slide_transition_settings.applescript",
+            "dump_keynote_native_state_bulk.applescript",
+        ):
+            script = (SCRIPTS / name).read_text(encoding="utf-8")
+            with self.subTest(name=name):
+                self.assertIn("on canonicalPath(pathText)", script)
+                self.assertIn("set deckPath to my canonicalPath(deckPath)", script)
+                self.assertIn("on error errorMessage number errorNumber", script)
+                self.assertGreaterEqual(
+                    script.count("if openedHere and docRef is not missing value then"),
+                    2,
+                )
+
+    def test_combined_motion_class_counts_cover_all_document_slides(self) -> None:
+        text = (
+            SKILL_ROOT / "references" / "combined-motion-taxonomy.md"
+        ).read_text(encoding="utf-8")
+        section = text.split("## Combined Motion Classes", 1)[1].split(
+            "## Canonical Study Sequences", 1
+        )[0]
+        counts = [
+            int(value)
+            for value in re.findall(r"^\| `[^`]+` \| (\d+) \|", section, re.MULTILINE)
+        ]
+        self.assertEqual(sum(counts), 472)
+
+    def test_visual_archetype_pairs_match_the_canonical_number_map(self) -> None:
+        with (
+            SKILL_ROOT / "references" / "transition-number-map.csv"
+        ).open(newline="", encoding="utf-8") as stream:
+            canonical = {
+                (row["document_pair"], row["playback_pair_excluding_skipped"])
+                for row in csv.DictReader(stream)
+                if row["playback_pair_excluding_skipped"] != "skipped"
+            }
+        text = (
+            SKILL_ROOT / "references" / "visual-transition-archetypes.md"
+        ).read_text(encoding="utf-8")
+        cited = set(re.findall(r"`(\d+->\d+)/(\d+->\d+)`", text))
+        self.assertFalse(cited - canonical, sorted(cited - canonical))
+
+    def test_reference_corpus_labels_its_archive_population(self) -> None:
+        text = (SKILL_ROOT / "references" / "reference-corpus.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("465 unique `Index/Slide*.iwa` records", text)
+        self.assertIn("472 document slides and 106 Magic Move transitions", text)
 
 
 if __name__ == "__main__":

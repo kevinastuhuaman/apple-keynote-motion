@@ -10,6 +10,9 @@ from typing import BinaryIO
 from zipfile import ZipFile, ZipInfo, is_zipfile
 
 
+MAX_NESTED_INDEX_BYTES = 256 * 1024 * 1024
+
+
 @dataclass(frozen=True)
 class ArchiveMember:
     name: str
@@ -80,8 +83,18 @@ class KeynoteArchive:
         candidates = sorted(
             name for name in outer_names if name == "Index.zip" or name.endswith("/Index.zip")
         )
+        oversized_candidates: list[str] = []
         for candidate in candidates:
-            nested_bytes = BytesIO(self.outer.read(candidate))
+            candidate_info = self.outer.getinfo(candidate)
+            if candidate_info.file_size > MAX_NESTED_INDEX_BYTES:
+                oversized_candidates.append(candidate)
+                continue
+            with self.outer.open(candidate_info) as nested_stream:
+                nested_payload = nested_stream.read(MAX_NESTED_INDEX_BYTES + 1)
+            if len(nested_payload) > MAX_NESTED_INDEX_BYTES:
+                oversized_candidates.append(candidate)
+                continue
+            nested_bytes = BytesIO(nested_payload)
             nested: ZipFile | None = None
             try:
                 nested = ZipFile(nested_bytes)
@@ -107,6 +120,11 @@ class KeynoteArchive:
             break
 
         if self.index is None:
+            if oversized_candidates:
+                raise ValueError(
+                    "No valid nested Index.zip was found; candidate(s) exceeded the "
+                    f"256 MiB safety limit: {', '.join(oversized_candidates)}"
+                )
             raise ValueError(
                 "Keynote archive has neither top-level Index/Document.iwa nor a valid Index.zip"
             )

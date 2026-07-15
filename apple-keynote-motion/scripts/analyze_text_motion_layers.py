@@ -14,6 +14,8 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
+from csv_safety import spreadsheet_safe_row
+
 try:
     from .analyze_transition_object_diffs import (
         AnalysisError,
@@ -30,6 +32,7 @@ try:
         load_transitions,
         match_cost,
         match_exact_buckets,
+        minimum_cost_eligible_pairs,
         normalized_size_delta,
         object_sort_key,
         pair_distance,
@@ -53,6 +56,7 @@ except ImportError:
         load_transitions,
         match_cost,
         match_exact_buckets,
+        minimum_cost_eligible_pairs,
         normalized_size_delta,
         object_sort_key,
         pair_distance,
@@ -159,16 +163,8 @@ def match_texts(
         methods["object_name"] += len(name_matches)
 
     average_diagonal = (source_size.diagonal + dest_size.diagonal) / 2.0
-    candidates: list[
-        tuple[
-            float,
-            tuple[Any, ...],
-            tuple[Any, ...],
-            dict[str, Any],
-            dict[str, Any],
-            str,
-        ]
-    ] = []
+    candidate_costs: dict[tuple[int, int], float] = {}
+    candidate_methods: dict[tuple[int, int], str] = {}
     for source_obj in remaining_source:
         for dest_obj in remaining_dest:
             source_text = source_obj["identity_key"]
@@ -201,29 +197,22 @@ def match_texts(
             cost += (1.0 - similarity) * 0.25 if source_text and dest_text else 0.0
             if same_index:
                 cost -= 0.05
-            candidates.append(
-                (
-                    cost,
-                    object_sort_key(source_obj),
-                    object_sort_key(dest_obj),
-                    source_obj,
-                    dest_obj,
-                    method,
-                )
-            )
+            key = (id(source_obj), id(dest_obj))
+            candidate_costs[key] = cost
+            candidate_methods[key] = method
 
-    used_source: set[int] = set()
-    used_dest: set[int] = set()
-    heuristic_matches: list[tuple[dict[str, Any], dict[str, Any]]] = []
-    for _, _, _, source_obj, dest_obj, method in sorted(
-        candidates, key=lambda item: item[:3]
-    ):
-        if id(source_obj) in used_source or id(dest_obj) in used_dest:
-            continue
-        used_source.add(id(source_obj))
-        used_dest.add(id(dest_obj))
-        heuristic_matches.append((source_obj, dest_obj))
-        methods[method] += 1
+    heuristic_matches = minimum_cost_eligible_pairs(
+        remaining_source,
+        remaining_dest,
+        lambda source_obj, dest_obj: candidate_costs[(id(source_obj), id(dest_obj))],
+        lambda source_obj, dest_obj: (
+            id(source_obj), id(dest_obj)
+        ) in candidate_costs,
+    )
+    methods.update(
+        candidate_methods[(id(source_obj), id(dest_obj))]
+        for source_obj, dest_obj in heuristic_matches
+    )
 
     matches.extend(heuristic_matches)
     remaining_source, remaining_dest = remove_pairs(
@@ -376,7 +365,11 @@ def write_outputs(rows: list[dict[str, Any]], output_dir: Path) -> list[Path]:
             writer = csv.DictWriter(handle, fieldnames=OUTPUT_FIELDS)
             writer.writeheader()
             for row in rows:
-                writer.writerow({field: row.get(field, "") for field in OUTPUT_FIELDS})
+                writer.writerow(
+                    spreadsheet_safe_row(
+                        {field: row.get(field, "") for field in OUTPUT_FIELDS}
+                    )
+                )
     except OSError as exc:
         raise AnalysisError(f"Could not write CSV {csv_path}: {exc}") from exc
 

@@ -6,7 +6,7 @@ The local read-only corpus contains nine official Apple event or WWDC decks. Arc
 
 | Deck | Slides | Magic Move | Dissolve | Push | Build slides | Action slides | Motion density |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| WWDC20 | 465 | 105 | 8 | 5 | 134 | 90 | 53.1% |
+| WWDC20* | 465 | 105 | 8 | 5 | 134 | 90 | 53.1% |
 | Spring Loaded 2021 | 235 | 39 | 0 | 1 | 52 | 29 | 38.7% |
 | WWDC16 | 413 | 65 | 8 | 14 | 52 | 36 | 34.1% |
 | WWDC17 | 535 | 64 | 7 | 12 | 54 | 47 | 29.7% |
@@ -15,6 +15,8 @@ The local read-only corpus contains nine official Apple event or WWDC decks. Arc
 | Education 2018 | 180 | 20 | 0 | 4 | 9 | 11 | 21.1% |
 | iPhone 7 2016 | 298 | 21 | 4 | 2 | 28 | 15 | 20.5% |
 | Loop 2016 | 242 | 25 | 0 | 2 | 13 | 18 | 20.2% |
+
+\* The WWDC20 corpus row is the schema-less archive scan: 465 unique `Index/Slide*.iwa` records and 105 Magic Move string signatures. Keynote's document navigator and transition inspector are the authoritative population for that deck: 472 document slides and 106 Magic Move transitions. Do not combine the archive-record denominator with the inspector counts.
 
 WWDC20 has complete transition-pair analysis, exact timelines for all 118 structural scenes, and eight every-frame playback studies. Spring Loaded 2021 adds newer native inspector and 60 fps evidence for AirTag Magic Move and compound Move, Scale, and Opacity actions.
 

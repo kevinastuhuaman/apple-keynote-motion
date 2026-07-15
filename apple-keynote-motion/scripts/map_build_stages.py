@@ -16,13 +16,18 @@ import math
 import re
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageFilter, ImageOps, ImageStat
 
+from csv_safety import spreadsheet_safe_row
+
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff"}
+HIGH_CONFIDENCE_MAX = 0.08
+MEDIUM_CONFIDENCE_MAX = 0.16
 
 
 def numeric_suffix(path: Path) -> int | None:
@@ -30,11 +35,15 @@ def numeric_suffix(path: Path) -> int | None:
     return int(groups[-1]) if groups else None
 
 
-def discover_numbered_images(directory: Path) -> dict[int, Path]:
+def discover_numbered_images(
+    directory: Path, *, prefix: str | None = None
+) -> dict[int, Path]:
     paths = sorted(
         path
         for path in directory.iterdir()
-        if path.is_file() and path.suffix.lower() in IMAGE_EXTS
+        if path.is_file()
+        and path.suffix.lower() in IMAGE_EXTS
+        and (prefix is None or path.stem.startswith(prefix + "-"))
     )
     if not paths:
         raise ValueError(f"No images found in {directory}")
@@ -59,36 +68,89 @@ def pdf_page_count(pdf_path: Path) -> int | None:
 
 
 def render_pdf_pages(pdf_path: Path, pages_dir: Path, width: int, force: bool) -> None:
-    existing = discover_numbered_images(pages_dir) if pages_dir.exists() and any(pages_dir.iterdir()) else {}
+    pages_dir.mkdir(parents=True, exist_ok=True)
+    generated_images = sorted(
+        path
+        for path in pages_dir.iterdir()
+        if path.is_file()
+        and path.suffix.lower() in IMAGE_EXTS
+        and path.stem.startswith("stage-page-")
+    )
+    pdftoppm = shutil.which("pdftoppm")
+    if force and not pdftoppm:
+        raise RuntimeError(
+            "pdftoppm is required. Install Poppler before mapping build stages."
+        )
     expected = pdf_page_count(pdf_path)
-    if existing and not force:
+
+    def render_to(prefix: Path) -> None:
+        if not pdftoppm:
+            raise RuntimeError(
+                "pdftoppm is required. Install Poppler before mapping build stages."
+            )
+        command = [
+            pdftoppm,
+            "-jpeg",
+            "-jpegopt",
+            "quality=84",
+            "-scale-to-x",
+            str(width),
+            "-scale-to-y",
+            "-1",
+            str(pdf_path),
+            str(prefix),
+        ]
+        subprocess.run(command, check=True)
+
+    if force:
+        with tempfile.TemporaryDirectory(
+            prefix="keynote-stage-render-", dir=pages_dir.parent
+        ) as temporary:
+            staging_dir = Path(temporary)
+            render_to(staging_dir / "stage-page")
+            staged_map = discover_numbered_images(staging_dir, prefix="stage-page")
+            staged_images = list(staged_map.values())
+            if expected is not None and len(staged_images) != expected:
+                raise ValueError(
+                    f"Replacement render produced {len(staged_images)} pages, "
+                    f"but PDF reports {expected}."
+                )
+
+            backup_dir = staging_dir / "previous"
+            backup_dir.mkdir()
+            moved_previous: list[tuple[Path, Path]] = []
+            installed: list[Path] = []
+            try:
+                for previous in generated_images:
+                    backup = backup_dir / previous.name
+                    previous.replace(backup)
+                    moved_previous.append((backup, previous))
+                for staged in staged_images:
+                    destination = pages_dir / staged.name
+                    staged.replace(destination)
+                    installed.append(destination)
+            except BaseException:
+                for destination in installed:
+                    destination.unlink(missing_ok=True)
+                for backup, previous in moved_previous:
+                    if backup.exists():
+                        backup.replace(previous)
+                raise
+        return
+
+    existing = (
+        discover_numbered_images(pages_dir, prefix="stage-page")
+        if generated_images
+        else {}
+    )
+    if existing:
         if expected is None or len(existing) == expected:
             return
         raise ValueError(
             f"Pages directory has {len(existing)} files but PDF reports {expected} pages. "
             "Use a new empty --pages-dir rather than aligning a partial render."
         )
-    if existing and force and expected is not None and len(existing) != expected:
-        raise ValueError("--force-render cannot safely repair a partial directory; use a new empty --pages-dir")
-
-    pages_dir.mkdir(parents=True, exist_ok=True)
-    pdftoppm = shutil.which("pdftoppm")
-    if not pdftoppm:
-        raise RuntimeError("pdftoppm is required. Install Poppler before mapping build stages.")
-    prefix = pages_dir / "stage-page"
-    command = [
-        pdftoppm,
-        "-jpeg",
-        "-jpegopt",
-        "quality=84",
-        "-scale-to-x",
-        str(width),
-        "-scale-to-y",
-        "-1",
-        str(pdf_path),
-        str(prefix),
-    ]
-    subprocess.run(command, check=True)
+    render_to(pages_dir / "stage-page")
 
 
 def visual_feature(path: Path) -> np.ndarray:
@@ -156,10 +218,11 @@ def monotonic_alignment(distances: np.ndarray) -> tuple[list[int], float]:
 
 
 def confidence(score: float, median: float) -> str:
-    adaptive = max(0.025, median * 2.5)
-    if score <= adaptive:
+    high_threshold = min(max(0.025, median * 2.5), HIGH_CONFIDENCE_MAX)
+    medium_threshold = min(max(0.08, median * 5.0), MEDIUM_CONFIDENCE_MAX)
+    if score <= high_threshold:
         return "high"
-    if score <= max(0.08, median * 5.0):
+    if score <= medium_threshold:
         return "medium"
     return "low"
 
@@ -256,7 +319,7 @@ def main() -> int:
 
     render_pdf_pages(args.pdf, args.pages_dir, args.render_width, args.force_render)
     slide_map = discover_numbered_images(args.slides_dir)
-    page_map = discover_numbered_images(args.pages_dir)
+    page_map = discover_numbered_images(args.pages_dir, prefix="stage-page")
     slide_paths = [slide_map[number] for number in sorted(slide_map)]
     page_paths = [page_map[number] for number in sorted(page_map)]
 
@@ -376,7 +439,7 @@ def main() -> int:
         for slide in slides:
             row = {field: slide.get(field, "") for field in writer.fieldnames}
             row["review_flags"] = ",".join(slide["review_flags"])
-            writer.writerow(row)
+            writer.writerow(spreadsheet_safe_row(row))
 
     summary = {key: value for key, value in manifest.items() if key != "slides"}
     summary["manifest"] = str(manifest_path)

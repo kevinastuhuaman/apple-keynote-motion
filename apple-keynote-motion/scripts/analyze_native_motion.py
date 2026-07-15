@@ -19,12 +19,15 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
+from csv_safety import spreadsheet_safe_row
 from keynote_archive import KeynoteArchive
 from keynote_effects import TRANSITION_EFFECTS
 
 
 PRINTABLE_RE = re.compile(rb"[\x20-\x7e]{4,}")
 UUID_RE = re.compile(r"^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$")
+MAX_DECODED_CHUNK_BYTES = 256 * 1024 * 1024
+MAX_DECODED_IWA_BYTES = 512 * 1024 * 1024
 
 
 BUILD_PREFIXES = (
@@ -86,6 +89,11 @@ class Snappy:
         rc = self.lib.snappy_uncompressed_length(data, len(data), ctypes.byref(out_len))
         if rc != 0:
             raise RuntimeError(f"snappy_uncompressed_length failed: {rc}")
+        if out_len.value > MAX_DECODED_CHUNK_BYTES:
+            raise RuntimeError(
+                "decoded Snappy chunk exceeds the 256 MiB safety limit: "
+                f"{out_len.value} bytes"
+            )
         out = ctypes.create_string_buffer(out_len.value)
         rc = self.lib.snappy_uncompress(data, len(data), out, ctypes.byref(out_len))
         if rc != 0:
@@ -95,19 +103,26 @@ class Snappy:
 
 def decompress_iwa(data: bytes, snappy: Snappy) -> bytes:
     pos = 0
+    decoded_size = 0
     chunks: list[bytes] = []
-    while pos + 4 <= len(data):
+    while pos < len(data):
+        if len(data) - pos < 4:
+            raise RuntimeError("truncated IWA chunk header")
         chunk_type = data[pos]
         chunk_len = data[pos + 1] | (data[pos + 2] << 8) | (data[pos + 3] << 16)
         pos += 4
+        if chunk_len > len(data) - pos:
+            raise RuntimeError(
+                f"truncated IWA chunk payload: declared {chunk_len} bytes, "
+                f"found {len(data) - pos}"
+            )
         chunk = data[pos : pos + chunk_len]
         pos += chunk_len
-        if chunk_type == 0:
-            chunks.append(snappy.uncompress(chunk))
-        elif chunk_type == 1:
-            chunks.append(chunk)
-        else:
-            chunks.append(chunk)
+        decoded_chunk = snappy.uncompress(chunk) if chunk_type == 0 else chunk
+        decoded_size += len(decoded_chunk)
+        if decoded_size > MAX_DECODED_IWA_BYTES:
+            raise RuntimeError("decoded IWA payload exceeds the 512 MiB safety limit")
+        chunks.append(decoded_chunk)
     return b"".join(chunks)
 
 
@@ -326,7 +341,7 @@ def analyze(deck: Path) -> dict:
     archive_layout = archive.layout
     package_prefix = archive.package_prefix
     return {
-        "deck": str(deck),
+        "deck": deck.name,
         "archive_layout": archive_layout,
         "package_prefix": package_prefix,
         "slide_count": len(slides),
@@ -396,7 +411,7 @@ def write_outputs(summary: dict, out_dir: Path) -> None:
         writer.writeheader()
         for slide in summary["transition_slides_archive_sorted"]:
             writer.writerow(
-                {
+                spreadsheet_safe_row({
                     "archive_name": slide["archive_name"],
                     "archive_sort_key": slide["archive_sort_key"],
                     "transition": slide["transition"],
@@ -409,7 +424,7 @@ def write_outputs(summary: dict, out_dir: Path) -> None:
                     "build_effects": "; ".join(slide["build_effects"]),
                     "build_effect_counts": json.dumps(slide["build_effect_counts"], sort_keys=True),
                     "topic": slide["topic"],
-                }
+                })
             )
 
     md_path = out_dir / "native-motion-inventory.md"

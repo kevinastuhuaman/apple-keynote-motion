@@ -267,6 +267,8 @@ Decoded slide motion classes after separating `action-*` and `bc-*` identifiers 
 | `TRANSITION_CA_DISSOLVE_AND_FLIP` | 1 | Object Flip. |
 | `TRANSITION_DISSOLVE_PLUS_MEDIA` | 1 | Dissolve plus movie/audio trigger. |
 
+The class counts sum to all 472 document slides; no slides are excluded from this table.
+
 Most deck motion is not a named transition. It is a composition strategy. These classes remain effect-presence heuristics; they do not recover target objects, true instance counts, build order, duration, delivery, or easing.
 
 ## Canonical Study Sequences

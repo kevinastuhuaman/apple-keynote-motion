@@ -38,6 +38,10 @@ on emitLine(fieldList)
 	return (my joinFields(fieldList) & linefeed)
 end emitLine
 
+on canonicalPath(pathText)
+	return POSIX path of ((POSIX file (pathText as text)) as alias)
+end canonicalPath
+
 on documentForPath(deckPath)
 	using terms from application id "com.apple.Keynote"
 		tell application id "com.apple.Keynote"
@@ -55,35 +59,46 @@ on run argv
 	set outputText to my emitLine({"slide_number", "skipped", "transition_effect", "transition_duration", "transition_delay", "automatic_transition"})
 	set deckPath to ""
 	if (count of argv) is greater than or equal to 1 then set deckPath to item 1 of argv
+	if deckPath is not "" then set deckPath to my canonicalPath(deckPath)
 	set openedHere to false
+	set docRef to missing value
 	using terms from application id "com.apple.Keynote"
 		tell application id "com.apple.Keynote"
-			with timeout of 600 seconds
-				if deckPath is "" then
-					set docRef to front document
-				else
-					set docRef to my documentForPath(deckPath)
-					if docRef is missing value then
-						open (POSIX file deckPath)
-						set openedHere to true
-					end if
-					set waitCount to 0
-					repeat while docRef is missing value and waitCount is less than 600
+			try
+				with timeout of 600 seconds
+					if deckPath is "" then
+						set docRef to front document
+					else
 						set docRef to my documentForPath(deckPath)
-						if docRef is missing value then delay 1
-						set waitCount to waitCount + 1
+						if docRef is missing value then
+							open (POSIX file deckPath)
+							set openedHere to true
+						end if
+						set waitCount to 0
+						repeat while docRef is missing value and waitCount is less than 600
+							set docRef to my documentForPath(deckPath)
+							if docRef is missing value then delay 1
+							set waitCount to waitCount + 1
+						end repeat
+						if docRef is missing value then error "Could not bind requested Keynote document: " & deckPath
+					end if
+					set slideCount to count slides of docRef
+					repeat with slideIndex from 1 to slideCount
+						set slideRef to slide slideIndex of docRef
+						set skippedText to skipped of slideRef
+						set transitionRef to transition properties of slideRef
+						set outputText to outputText & my emitLine({slideIndex, skippedText, transition effect of transitionRef, transition duration of transitionRef, transition delay of transitionRef, automatic transition of transitionRef})
 					end repeat
-					if docRef is missing value then error "Could not bind requested Keynote document: " & deckPath
+				end timeout
+			on error errorMessage number errorNumber
+				if openedHere and docRef is not missing value then
+					try
+						close docRef saving no
+					end try
 				end if
-				set slideCount to count slides of docRef
-				repeat with slideIndex from 1 to slideCount
-					set slideRef to slide slideIndex of docRef
-					set skippedText to skipped of slideRef
-					set transitionRef to transition properties of slideRef
-					set outputText to outputText & my emitLine({slideIndex, skippedText, transition effect of transitionRef, transition duration of transitionRef, transition delay of transitionRef, automatic transition of transitionRef})
-				end repeat
-				if openedHere then close docRef saving no
-			end timeout
+				error errorMessage number errorNumber
+			end try
+			if openedHere and docRef is not missing value then close docRef saving no
 		end tell
 	end using terms from
 	return outputText
