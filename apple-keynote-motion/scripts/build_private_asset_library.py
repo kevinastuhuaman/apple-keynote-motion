@@ -15,6 +15,7 @@ import csv
 import hashlib
 import html
 import json
+import math
 import mimetypes
 import os
 import re
@@ -403,11 +404,17 @@ def media_metadata(path: Path, detection: Detection) -> dict[str, Any]:
     streams = probe.get("streams", [])
     video = next((row for row in streams if row.get("codec_type") == "video"), {})
     audio = next((row for row in streams if row.get("codec_type") == "audio"), {})
-    duration = probe.get("format", {}).get("duration")
+    duration = None
+    try:
+        parsed_duration = float(probe.get("format", {}).get("duration"))
+        if math.isfinite(parsed_duration) and parsed_duration >= 0:
+            duration = parsed_duration
+    except (TypeError, ValueError):
+        pass
     return {
         "width": video.get("width"),
         "height": video.get("height"),
-        "duration": float(duration) if duration else None,
+        "duration": duration,
         "codec": video.get("codec_name") or audio.get("codec_name"),
         "frame_rate": video.get("r_frame_rate"),
         "channels": audio.get("channels"),

@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -229,8 +230,12 @@ def main() -> int:
             extract_member(archive, info, sample_path)
             probe = ffprobe(sample_path)
             duration = None
-            if probe.get("format", {}).get("duration"):
-                duration = float(probe["format"]["duration"])
+            try:
+                parsed_duration = float(probe.get("format", {}).get("duration"))
+                if math.isfinite(parsed_duration) and parsed_duration >= 0:
+                    duration = parsed_duration
+            except (TypeError, ValueError):
+                pass
             video_stream = next(
                 (s for s in probe.get("streams", []) if s.get("codec_type") == "video"),
                 {},

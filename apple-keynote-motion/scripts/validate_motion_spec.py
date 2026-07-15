@@ -85,6 +85,10 @@ def positive_integer(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
 
+def allowed_string(value: Any, choices: set[str]) -> bool:
+    return isinstance(value, str) and value in choices
+
+
 def validate(spec: Any) -> list[Issue]:
     issues: list[Issue] = []
     require(isinstance(spec, dict), "error", "$", "The root must be a JSON object.", issues)
@@ -109,9 +113,9 @@ def validate(spec: Any) -> list[Issue]:
             seen_scene_ids.add(scene_id)
 
         evidence = scene.get("evidence", "recommended")
-        require(evidence in ALLOWED_EVIDENCE, "error", f"{path}.evidence", "Use a supported evidence label.", issues)
+        require(allowed_string(evidence, ALLOWED_EVIDENCE), "error", f"{path}.evidence", "Use a supported evidence label.", issues)
         intent = scene.get("intent")
-        require(intent in ALLOWED_INTENTS, "error", f"{path}.intent", "Use one supported dominant motion intent.", issues)
+        require(allowed_string(intent, ALLOWED_INTENTS), "error", f"{path}.intent", "Use one supported dominant motion intent.", issues)
 
         states = as_list(scene.get("states"))
         require(bool(states), "error", f"{path}.states", "Scene needs one or more slide states.", issues)
@@ -135,7 +139,7 @@ def validate(spec: Any) -> list[Issue]:
                 if not isinstance(obj, dict):
                     require(False, "error", object_path, "Object must be a JSON object.", issues)
                     continue
-                require(obj.get("role") in ALLOWED_ROLES, "error", f"{object_path}.role", "Use a supported object role.", issues)
+                require(allowed_string(obj.get("role"), ALLOWED_ROLES), "error", f"{object_path}.role", "Use a supported object role.", issues)
                 frame = obj.get("frame")
                 require(isinstance(frame, dict), "error", f"{object_path}.frame", "Record x, y, width, and height.", issues)
                 if isinstance(frame, dict):
@@ -158,7 +162,7 @@ def validate(spec: Any) -> list[Issue]:
                 duration = transition.get("duration")
                 require(numeric(duration) and 0.1 <= duration <= 20, "error", f"{transition_path}.duration", "Duration must be between 0.1 and 20 seconds.", issues)
                 advance = transition.get("advance", "on-click")
-                require(advance in ALLOWED_ADVANCE, "error", f"{transition_path}.advance", "Advance must be on-click or automatic.", issues)
+                require(allowed_string(advance, ALLOWED_ADVANCE), "error", f"{transition_path}.advance", "Advance must be on-click or automatic.", issues)
                 delay = transition.get("delay", 0)
                 require(numeric(delay) and delay >= 0, "error", f"{transition_path}.delay", "Delay must be zero or positive.", issues)
                 if advance == "on-click" and numeric(delay) and delay != 0:
@@ -184,9 +188,9 @@ def validate(spec: Any) -> list[Issue]:
                     mm = transition.get("magic_move")
                     require(isinstance(mm, dict), "error", f"{transition_path}.magic_move", "Record match, fade_unmatched, and acceleration settings.", issues)
                     if isinstance(mm, dict):
-                        require(mm.get("match") in ALLOWED_MAGIC_MOVE_MATCH, "error", f"{transition_path}.magic_move.match", "Use by-object, by-word, or by-character.", issues)
+                        require(allowed_string(mm.get("match"), ALLOWED_MAGIC_MOVE_MATCH), "error", f"{transition_path}.magic_move.match", "Use by-object, by-word, or by-character.", issues)
                         require(isinstance(mm.get("fade_unmatched"), bool), "error", f"{transition_path}.magic_move.fade_unmatched", "Record an explicit boolean.", issues)
-                        require(mm.get("acceleration") in ALLOWED_ACCELERATION, "error", f"{transition_path}.magic_move.acceleration", "Record a supported acceleration.", issues)
+                        require(allowed_string(mm.get("acceleration"), ALLOWED_ACCELERATION), "error", f"{transition_path}.magic_move.acceleration", "Record a supported acceleration.", issues)
                 elif isinstance(transition, dict) and "magic_move" in transition:
                     require(False, "warning", f"{transition_path}.magic_move", "Remove Magic Move-only settings from another transition type.", issues)
                 if effect == "push":
@@ -210,21 +214,21 @@ def validate(spec: Any) -> list[Issue]:
             require(has_build_state, "error", f"{build_path}.slide", "Build slide must name a scene state.", issues)
             target = build.get("target")
             target_ids = object_ids(state_by_slide[slide]) if has_build_state else set()
-            require(target in target_ids, "error", f"{build_path}.target", "Build target must name an object on that build slide.", issues)
-            require(build.get("phase") in ALLOWED_PHASES, "error", f"{build_path}.phase", "Use build-in, action, or build-out.", issues)
+            require(isinstance(target, str) and target in target_ids, "error", f"{build_path}.target", "Build target must name an object on that build slide.", issues)
+            require(allowed_string(build.get("phase"), ALLOWED_PHASES), "error", f"{build_path}.phase", "Use build-in, action, or build-out.", issues)
             require(isinstance(build.get("effect"), str) and bool(build.get("effect")), "error", f"{build_path}.effect", "Build effect is required.", issues)
             duration = build.get("duration")
             require(numeric(duration) and 0.05 <= duration <= 20, "error", f"{build_path}.duration", "Build duration must be between 0.05 and 20 seconds.", issues)
             delay = build.get("delay", 0)
             require(numeric(delay) and delay >= 0, "error", f"{build_path}.delay", "Build delay must be zero or positive.", issues)
             start = build.get("start")
-            require(start in ALLOWED_BUILD_START, "error", f"{build_path}.start", "Use a supported build start relationship.", issues)
+            require(allowed_string(start, ALLOWED_BUILD_START), "error", f"{build_path}.start", "Use a supported build start relationship.", issues)
             order = build.get("order")
             require(positive_integer(order), "error", f"{build_path}.order", "Build order must be a positive integer.", issues)
             if has_build_state and positive_integer(order):
                 require((slide, order) not in seen_orders, "error", f"{build_path}.order", "Build order must be unique per slide.", issues)
                 seen_orders.add((slide, order))
-            if start in {"with-build", "after-build"}:
+            if isinstance(start, str) and start in {"with-build", "after-build"}:
                 require(isinstance(build.get("relative_to"), str), "error", f"{build_path}.relative_to", "Relative builds must name another build id.", issues)
 
         build_by_id = {
@@ -233,7 +237,10 @@ def validate(spec: Any) -> list[Issue]:
             if isinstance(build, dict) and isinstance(build.get("id"), str)
         }
         for build_index, build in enumerate(builds):
-            if not isinstance(build, dict) or build.get("start") not in {"with-build", "after-build"}:
+            if not isinstance(build, dict):
+                continue
+            start = build.get("start")
+            if not isinstance(start, str) or start not in {"with-build", "after-build"}:
                 continue
             build_path = f"{path}.builds[{build_index}]"
             relative_to = build.get("relative_to")

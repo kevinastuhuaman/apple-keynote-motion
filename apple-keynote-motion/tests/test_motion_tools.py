@@ -25,10 +25,12 @@ from apply_slide_transitions import (  # noqa: E402
 )
 from analyze_keynote_reference import main as analyze_keynote_reference_main  # noqa: E402
 from build_private_asset_library import (  # noqa: E402
+    Detection,
     classify_asset_name,
     deck_id,
     detect_file_kind,
     index_package_metadata,
+    media_metadata,
     recover_utf8_zip_name,
     write_summary,
 )
@@ -194,6 +196,14 @@ class MotionSpecTests(unittest.TestCase):
         paths = {issue.path for issue in validate(spec) if issue.severity == "error"}
         self.assertIn("$.scenes[0].builds[0].slide", paths)
         self.assertIn("$.scenes[0].builds[0].order", paths)
+
+    def test_unhashable_build_values_return_structured_issues(self) -> None:
+        spec = valid_spec()
+        spec["scenes"][0]["builds"][0]["target"] = []
+        spec["scenes"][0]["builds"][0]["start"] = []
+        paths = {issue.path for issue in validate(spec) if issue.severity == "error"}
+        self.assertIn("$.scenes[0].builds[0].target", paths)
+        self.assertIn("$.scenes[0].builds[0].start", paths)
 
     def test_relative_build_must_be_on_the_same_slide(self) -> None:
         spec = valid_spec()
@@ -493,11 +503,13 @@ class DeckCopyTests(unittest.TestCase):
 
 
 class KeynoteReferenceAnalyzerTests(unittest.TestCase):
-    def make_archive(self, path: Path) -> None:
+    def make_archive(self, path: Path, include_video: bool = False) -> None:
         with zipfile.ZipFile(path, "w") as archive:
             archive.writestr("Index/Document.iwa", b"document")
             archive.writestr("Index/Slide.iwa", b"slide")
             archive.writestr("preview.jpg", b"preview-bytes")
+            if include_video:
+                archive.writestr("Data/clip.mov", b"video-bytes")
 
     def test_metadata_only_mode_does_not_extract_previews(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -511,6 +523,37 @@ class KeynoteReferenceAnalyzerTests(unittest.TestCase):
             self.assertEqual(summary["media_extraction"]["preview_samples"], 0)
             self.assertEqual(summary["media_extraction"]["extracted_bytes"], 0)
             self.assertFalse((output / "previews" / "preview.jpg").exists())
+
+    def test_full_media_mode_treats_na_duration_as_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            deck = root / "reference.key"
+            output = root / "analysis"
+            self.make_archive(deck, include_video=True)
+            argv = [
+                "analyze_keynote_reference.py",
+                str(deck),
+                str(output),
+                "--media-mode",
+                "full",
+                "--max-video-samples",
+                "1",
+            ]
+            probe = {
+                "format": {"duration": "N/A"},
+                "streams": [{"codec_type": "video", "codec_name": "h264"}],
+            }
+            with patch.object(sys, "argv", argv):
+                with patch("analyze_keynote_reference.ffprobe", return_value=probe):
+                    with patch(
+                        "analyze_keynote_reference.subprocess.run",
+                        side_effect=FileNotFoundError,
+                    ):
+                        self.assertEqual(analyze_keynote_reference_main(), 0)
+            summary = json.loads(
+                (output / "archive-summary.json").read_text(encoding="utf-8")
+            )
+            self.assertIsNone(summary["top_video_samples"][0]["duration_seconds"])
 
     def test_preview_extraction_obeys_the_shared_byte_cap(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1085,6 +1128,16 @@ class CorpusSummaryTests(unittest.TestCase):
 
 
 class PrivateAssetLibraryTests(unittest.TestCase):
+    def test_media_metadata_treats_na_duration_as_missing(self) -> None:
+        detection = Detection("video/mp4", "video", ".mp4")
+        probe = {
+            "format": {"duration": "N/A"},
+            "streams": [{"codec_type": "video", "codec_name": "h264"}],
+        }
+        with patch("build_private_asset_library.ffprobe", return_value=probe):
+            metadata = media_metadata(Path("clip.mp4"), detection)
+        self.assertIsNone(metadata["duration"])
+
     def test_deck_ids_disambiguate_same_named_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
