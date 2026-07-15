@@ -33,8 +33,10 @@ from analyze_playback_video import (  # noqa: E402
     bridge_short_gaps,
     choose_keyframes,
     detect_active_segments,
+    probe_video,
     visual_energy_fit,
 )
+from analyze_text_motion_layers import text_objects_for_slide  # noqa: E402
 from audit_magic_move_export_risks import (  # noqa: E402
     is_zero_geometry,
     paired_zero_paths,
@@ -47,6 +49,7 @@ from extract_native_build_timeline import (  # noqa: E402
     merge_patch_dict,
 )
 from keynote_archive import KeynoteArchive  # noqa: E402
+from make_build_stage_storyboards import discover_pages  # noqa: E402
 from make_transition_storyboards import load_pairs  # noqa: E402
 from map_build_stages import monotonic_alignment, stage_kind  # noqa: E402
 from patch_build_start_relationship import START_FLAGS, patch_deck  # noqa: E402
@@ -826,6 +829,90 @@ class ShareabilityTests(unittest.TestCase):
             script = (SKILL_ROOT / "scripts" / name).read_text(encoding="utf-8")
             self.assertIn("POSIX path of (file of candidate) is deckPath", script)
             self.assertNotIn("name of candidate is expected", script)
+
+    def test_range_dump_always_emits_schema_and_document_metadata(self) -> None:
+        script = (
+            SKILL_ROOT / "scripts" / "dump_keynote_native_state_bulk.applescript"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("if requestedStart is 1 then", script)
+        self.assertIn('{"record", "slide_number", "object_type"', script)
+        self.assertIn('{"document", "", "", ""', script)
+
+    def test_movie_export_restores_open_document_state(self) -> None:
+        script = (
+            SKILL_ROOT / "scripts" / "export_keynote_movie_pair.applescript"
+        ).read_text(encoding="utf-8")
+        self.assertIn("set originalSkippedStates to skipped of every slide", script)
+        self.assertIn(
+            "my restoreSkippedStates(referenceDocument, originalSkippedStates)", script
+        )
+        self.assertIn("set documentCountBeforeOpen to count of documents", script)
+        self.assertIn(
+            "set openedHere to ((count of documents) > documentCountBeforeOpen)",
+            script,
+        )
+        self.assertEqual(script.count("set referenceDocument to open sourceFile"), 1)
+        self.assertNotIn("repeat with openAttempt", script)
+        self.assertIn("if openedHere then close referenceDocument saving no", script)
+
+
+class ReviewRegressionTests(unittest.TestCase):
+    def test_text_motion_includes_text_bearing_shapes_only(self) -> None:
+        dataset = Mock(
+            objects={
+                1: [
+                    {
+                        "object_type": "shape",
+                        "identity_text": "Callout",
+                        "width": 200.0,
+                        "height": 80.0,
+                    },
+                    {
+                        "object_type": "shape",
+                        "identity_text": "",
+                        "width": 200.0,
+                        "height": 80.0,
+                    },
+                    {
+                        "object_type": "text item",
+                        "identity_text": "Label",
+                        "width": 200.0,
+                        "height": 80.0,
+                    },
+                ]
+            }
+        )
+        objects = text_objects_for_slide(dataset, 1)
+        self.assertEqual([obj["identity_text"] for obj in objects], ["Callout", "Label"])
+
+    def test_video_probe_falls_back_from_na_metadata(self) -> None:
+        payload = {
+            "streams": [
+                {
+                    "codec_name": "h264",
+                    "width": 1920,
+                    "height": 1080,
+                    "r_frame_rate": "60/1",
+                    "avg_frame_rate": "60/1",
+                    "duration": "N/A",
+                    "nb_frames": "N/A",
+                }
+            ],
+            "format": {"duration": "2.5", "size": "4096"},
+        }
+        with patch("analyze_playback_video.run_json", return_value=payload):
+            metadata = probe_video(Path("sample.m4v"))
+        self.assertEqual(metadata["duration_seconds"], 2.5)
+        self.assertEqual(metadata["frame_count"], 150)
+
+    def test_storyboard_pages_normalize_zero_based_render_names(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            first = directory / "stage-page-0.png"
+            second = directory / "stage-page-1.png"
+            first.touch()
+            second.touch()
+            self.assertEqual(discover_pages(directory), {1: first, 2: second})
 
 
 class CorpusSummaryTests(unittest.TestCase):

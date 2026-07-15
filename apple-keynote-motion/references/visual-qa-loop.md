@@ -82,12 +82,15 @@ Before export, verify numeric inspector fields from the saved archive. Keynote c
 For native movie exports, measure every frame and create deterministic review artifacts:
 
 ```bash
+osascript scripts/export_keynote_movie_pair.applescript \
+  deck-render-copy.key audit-output/sequence.m4v 26 27
+
 python3 scripts/analyze_playback_video.py audit-output/sequence.m4v \
   --output-dir audit-output/playback-analysis \
   --label sequence-name
 ```
 
-This produces frame metrics, active intervals, a contact sheet, and an inferred visual-energy easing proxy. Inspector duration and visible pixel-change duration are different measurements; preserve both.
+The exporter restores every original skipped-slide state. If the scratch deck was already open, it remains open; if the script opened it, the script closes it without saving. If Keynote reports `Operation not permitted`, stop instead of retrying: open the local scratch deck manually once, then rerun the exporter. The analyzer produces frame metrics, active intervals, a contact sheet, and an inferred visual-energy easing proxy. Inspector duration and visible pixel-change duration are different measurements; preserve both.
 
 When a candidate intentionally follows a reference interval, compare the corresponding segments:
 

@@ -26,6 +26,31 @@ def run_json(command: list[str]) -> dict[str, Any]:
     return json.loads(completed.stdout)
 
 
+def optional_float(value: Any) -> float | None:
+    if value in (None, "", "N/A"):
+        return None
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return result if math.isfinite(result) else None
+
+
+def frame_rate(value: Any) -> float | None:
+    if value in (None, "", "N/A"):
+        return None
+    try:
+        numerator_text, denominator_text = str(value).split("/", 1)
+        numerator = float(numerator_text)
+        denominator = float(denominator_text)
+    except (TypeError, ValueError):
+        return None
+    if denominator == 0:
+        return None
+    result = numerator / denominator
+    return result if math.isfinite(result) and result > 0 else None
+
+
 def probe_video(video: Path) -> dict[str, Any]:
     payload = run_json(
         [
@@ -44,10 +69,22 @@ def probe_video(video: Path) -> dict[str, Any]:
         ]
     )
     stream = payload["streams"][0]
-    numerator, denominator = (int(value) for value in stream["avg_frame_rate"].split("/"))
-    fps = numerator / denominator
-    duration = float(stream.get("duration") or payload["format"]["duration"])
-    frame_count = int(stream.get("nb_frames") or round(duration * fps))
+    fps = frame_rate(stream.get("avg_frame_rate")) or frame_rate(
+        stream.get("r_frame_rate")
+    )
+    if fps is None:
+        raise ValueError("ffprobe did not report a usable video frame rate")
+    duration = optional_float(stream.get("duration")) or optional_float(
+        payload.get("format", {}).get("duration")
+    )
+    if duration is None:
+        raise ValueError("ffprobe did not report a usable video duration")
+    reported_frames = optional_float(stream.get("nb_frames"))
+    frame_count = (
+        int(reported_frames)
+        if reported_frames is not None and reported_frames > 0
+        else round(duration * fps)
+    )
     return {
         "codec": stream.get("codec_name"),
         "width": int(stream["width"]),

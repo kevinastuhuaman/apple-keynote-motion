@@ -41,13 +41,14 @@ def discover_pages(directory: Path) -> dict[int, Path]:
         for path in directory.iterdir()
         if path.is_file() and path.suffix.lower() in IMAGE_EXTS
     )
-    mapping = {
-        number: path
-        for path in paths
-        if (number := numeric_suffix(path)) is not None
-    }
-    if not mapping:
+    suffixes = [numeric_suffix(path) for path in paths]
+    if not paths or not all(number is not None for number in suffixes):
         raise ValueError(f"No numbered stage images found in {directory}")
+    if len(set(suffixes)) != len(paths):
+        raise ValueError(f"Stage image numbers are not unique in {directory}")
+    mapping = {int(number): path for number, path in zip(suffixes, paths)}
+    if min(mapping) == 0:
+        mapping = {number + 1: path for number, path in mapping.items()}
     return dict(sorted(mapping.items()))
 
 

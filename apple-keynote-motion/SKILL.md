@@ -220,7 +220,7 @@ Read `references/keynote-control-surface.md` before automating the UI. Re-fetch 
 - `compare_playback_motion.py`: compare corresponding rendered intervals with an explicitly scoped temporal-motion-fidelity score.
 - `audit_magic_move_export_risks.py`: report paired zero-size drawable paths that can participate in a Keynote 15.3 export assertion; treat findings as warnings, not deterministic failures.
 - `export_keynote_visuals.applescript`: export slide images or all build stages from a scratch copy.
-- `export_keynote_movie_pair.applescript`: export one slide range from a scratch deck as H.264 1080p60 while skipping other slides only in memory and closing without saving.
+- `export_keynote_movie_pair.applescript`: export one slide range from a scratch deck as H.264 1080p60 while skipping other slides only in memory; it restores the original skipped states and never closes a document it did not open.
 - `make_transition_storyboards.py`: create labeled pair storyboards from exported slide images.
 - `map_build_stages.py`: align every all-stages PDF page back to its playback slide and build-stage range.
 - `make_build_stage_storyboards.py`: render every stage of every multi-stage slide into labeled visual panels.

@@ -94,7 +94,10 @@ def text_objects_for_slide(
 ) -> list[dict[str, Any]]:
     objects = []
     for obj in dataset.objects.get(slide_number, []):
-        if obj["object_type"] != "text item":
+        object_type = obj["object_type"]
+        is_text_item = object_type == "text item"
+        is_text_shape = object_type == "shape" and bool(obj["identity_text"])
+        if not (is_text_item or is_text_shape):
             continue
         if (
             obj["identity_text"]

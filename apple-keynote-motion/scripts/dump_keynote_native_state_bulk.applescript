@@ -99,9 +99,7 @@ on run argv
 	if (count of argv) is greater than or equal to (argumentOffset + 1) then set requestedStart to (item (argumentOffset + 1) of argv) as integer
 	if (count of argv) is greater than or equal to (argumentOffset + 2) then set requestedEnd to (item (argumentOffset + 2) of argv) as integer
 
-	if requestedStart is 1 then
-		set outputText to outputText & (my emitLine({"record", "slide_number", "object_type", "object_index", "object_name", "identity_text", "x", "y", "width", "height", "rotation", "opacity", "locked", "extra"}))
-	end if
+	set outputText to outputText & (my emitLine({"record", "slide_number", "object_type", "object_index", "object_name", "identity_text", "x", "y", "width", "height", "rotation", "opacity", "locked", "extra"}))
 
 	using terms from application id "com.apple.Keynote"
 		tell application id "com.apple.Keynote"
@@ -124,17 +122,15 @@ on run argv
 					if docRef is missing value then error "Could not bind requested Keynote document: " & deckPath
 				end if
 				set slideCount to count slides of docRef
-				if requestedStart is 1 then
-					set documentWidth to ""
-					set documentHeight to ""
-					set keynoteVersion to ""
-					try
-						set documentWidth to width of docRef
-						set documentHeight to height of docRef
-						set keynoteVersion to version
-					end try
-					set outputText to outputText & (my emitLine({"document", "", "", "", "", "", "", "", documentWidth, documentHeight, "", "", "", "keynote_version=" & (keynoteVersion as text) & "; slide_count=" & (slideCount as text)}))
-				end if
+				set documentWidth to ""
+				set documentHeight to ""
+				set keynoteVersion to ""
+				try
+					set documentWidth to width of docRef
+					set documentHeight to height of docRef
+					set keynoteVersion to version
+				end try
+				set outputText to outputText & (my emitLine({"document", "", "", "", "", "", "", "", documentWidth, documentHeight, "", "", "", "keynote_version=" & (keynoteVersion as text) & "; slide_count=" & (slideCount as text)}))
 				if requestedEnd is 0 or requestedEnd is greater than slideCount then set requestedEnd to slideCount
 
 				repeat with slideIndex from requestedStart to requestedEnd
