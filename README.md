@@ -68,7 +68,7 @@ Deep archive and playback analysis may also use `numpy`, `Pillow`, `keynote-pars
 - Extracted 1,131 exact native events from 118 structural scenes.
 - Verified a sanitized 21-slide native scene library at 1920x1080 and constant 60 fps.
 - Covered Magic Move plus typewriter text, paragraph cascades, charts, motion paths, compound Move + Scale + Opacity, transient Build Outs, and a 65-object expansion.
-- Passed 101 automated tests, skill validation, AppleScript compilation, ZIP integrity checks, and the internal SHA-256 manifest.
+- Passed 102 automated tests, skill validation, AppleScript compilation, ZIP integrity checks, and the internal SHA-256 manifest.
 
 Motion scores in this project measure explicitly defined timing or rendered-motion dimensions. They are not a claim that every generated deck is numerically "99% Apple."
 

@@ -1756,6 +1756,14 @@ class FinalReviewRegressionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "contiguous sequence"):
                 discover_numbered_images(pages, prefix="stage-page")
 
+    def test_stage_page_cache_rejects_duplicate_numeric_suffixes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            pages = Path(tmp)
+            (pages / "stage-page-1.jpg").touch()
+            (pages / "stage-page-01.png").touch()
+            with self.assertRaisesRegex(ValueError, "unique page numbers"):
+                discover_numbered_images(pages, prefix="stage-page")
+
     def test_confidence_retains_absolute_quality_limits(self) -> None:
         self.assertEqual(confidence(0.50, 0.50), "low")
         self.assertEqual(confidence(0.10, 0.50), "medium")

@@ -50,6 +50,11 @@ def discover_numbered_images(
         raise ValueError(f"No images found in {directory}")
 
     suffixes = [numeric_suffix(path) for path in paths]
+    numeric_suffixes = [value for value in suffixes if value is not None]
+    if prefix is not None and len(set(numeric_suffixes)) != len(numeric_suffixes):
+        raise ValueError(
+            f"Numbered images in {directory} must use unique page numbers"
+        )
     if all(value is not None for value in suffixes) and len(set(suffixes)) == len(paths):
         mapping = {int(value): path for value, path in zip(suffixes, paths)}
         if min(mapping) == 0:
