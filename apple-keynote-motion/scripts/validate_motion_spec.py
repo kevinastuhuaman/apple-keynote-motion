@@ -81,6 +81,10 @@ def numeric(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
+def positive_integer(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
 def validate(spec: Any) -> list[Issue]:
     issues: list[Issue] = []
     require(isinstance(spec, dict), "error", "$", "The root must be a JSON object.", issues)
@@ -119,8 +123,8 @@ def validate(spec: Any) -> list[Issue]:
             if not isinstance(state, dict):
                 continue
             slide = state.get("slide")
-            require(isinstance(slide, int) and slide > 0, "error", f"{state_path}.slide", "Slide must be a positive integer.", issues)
-            if isinstance(slide, int):
+            require(positive_integer(slide), "error", f"{state_path}.slide", "Slide must be a positive integer.", issues)
+            if positive_integer(slide):
                 require(slide not in state_by_slide, "error", f"{state_path}.slide", "A scene cannot define the same slide twice.", issues)
                 state_by_slide[slide] = state
             ids = object_ids(state)
@@ -161,8 +165,8 @@ def validate(spec: Any) -> list[Issue]:
                     require(False, "warning", f"{transition_path}.delay", "On-click transitions normally use zero delay.", issues)
                 from_slide = transition.get("from_slide")
                 to_slide = transition.get("to_slide")
-                has_from_state = isinstance(from_slide, int) and from_slide in state_by_slide
-                has_to_state = isinstance(to_slide, int) and to_slide in state_by_slide
+                has_from_state = positive_integer(from_slide) and from_slide in state_by_slide
+                has_to_state = positive_integer(to_slide) and to_slide in state_by_slide
                 require(has_from_state, "error", f"{transition_path}.from_slide", "from_slide must name a scene state.", issues)
                 require(has_to_state, "error", f"{transition_path}.to_slide", "to_slide must name a scene state.", issues)
                 if has_from_state and has_to_state:
@@ -202,9 +206,10 @@ def validate(spec: Any) -> list[Issue]:
                 require(build_id not in seen_build_ids, "error", f"{build_path}.id", "Build id must be unique inside the scene.", issues)
                 seen_build_ids.add(build_id)
             slide = build.get("slide")
-            require(slide in state_by_slide, "error", f"{build_path}.slide", "Build slide must name a scene state.", issues)
+            has_build_state = positive_integer(slide) and slide in state_by_slide
+            require(has_build_state, "error", f"{build_path}.slide", "Build slide must name a scene state.", issues)
             target = build.get("target")
-            target_ids = object_ids(state_by_slide[slide]) if slide in state_by_slide else set()
+            target_ids = object_ids(state_by_slide[slide]) if has_build_state else set()
             require(target in target_ids, "error", f"{build_path}.target", "Build target must name an object on that build slide.", issues)
             require(build.get("phase") in ALLOWED_PHASES, "error", f"{build_path}.phase", "Use build-in, action, or build-out.", issues)
             require(isinstance(build.get("effect"), str) and bool(build.get("effect")), "error", f"{build_path}.effect", "Build effect is required.", issues)
@@ -215,8 +220,8 @@ def validate(spec: Any) -> list[Issue]:
             start = build.get("start")
             require(start in ALLOWED_BUILD_START, "error", f"{build_path}.start", "Use a supported build start relationship.", issues)
             order = build.get("order")
-            require(isinstance(order, int) and order > 0, "error", f"{build_path}.order", "Build order must be a positive integer.", issues)
-            if isinstance(slide, int) and isinstance(order, int):
+            require(positive_integer(order), "error", f"{build_path}.order", "Build order must be a positive integer.", issues)
+            if has_build_state and positive_integer(order):
                 require((slide, order) not in seen_orders, "error", f"{build_path}.order", "Build order must be unique per slide.", issues)
                 seen_orders.add((slide, order))
             if start in {"with-build", "after-build"}:
@@ -248,7 +253,7 @@ def validate(spec: Any) -> list[Issue]:
                 )
                 relative_order = relative_build.get("order")
                 current_order = build.get("order")
-                if isinstance(relative_order, int) and isinstance(current_order, int):
+                if positive_integer(relative_order) and positive_integer(current_order):
                     require(
                         relative_order < current_order,
                         "error",

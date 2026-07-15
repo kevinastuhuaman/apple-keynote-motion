@@ -711,6 +711,11 @@ def normalized_size_delta(
     return sum(deltas)
 
 
+def circular_rotation_delta(source: float, dest: float) -> float:
+    raw_delta = abs(dest - source) % 360.0
+    return min(raw_delta, 360.0 - raw_delta)
+
+
 def match_cost(
     source: dict[str, Any],
     dest: dict[str, Any],
@@ -723,7 +728,7 @@ def match_cost(
     size_cost = normalized_size_delta(source, dest, source_size, dest_size)
     rotation_cost = 0.0
     if source.get("rotation") is not None and dest.get("rotation") is not None:
-        rotation_cost = min(abs(dest["rotation"] - source["rotation"]), 360.0) / 360.0
+        rotation_cost = circular_rotation_delta(source["rotation"], dest["rotation"]) / 360.0
     opacity_cost = 0.0
     if source.get("opacity") is not None and dest.get("opacity") is not None:
         opacity_cost = min(abs(dest["opacity"] - source["opacity"]), 100.0) / 100.0

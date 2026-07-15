@@ -185,6 +185,19 @@ def main() -> int:
         ]
 
         extracted_bytes = 0
+        preview_names = ["preview.jpg", "preview-web.jpg", "preview-micro.jpg"]
+        preview_infos = []
+        if args.media_mode != "none":
+            for name in preview_names:
+                try:
+                    info = archive.getinfo(name)
+                except KeyError:
+                    continue
+                if extracted_bytes + info.size > args.max_extracted_bytes:
+                    continue
+                preview_infos.append((name, info))
+                extracted_bytes += info.size
+
         largest_videos = []
         if args.media_mode == "full":
             for info in largest_videos_all:
@@ -195,25 +208,18 @@ def main() -> int:
                 largest_videos.append(info)
                 extracted_bytes += info.size
 
-        remaining_bytes = max(0, args.max_extracted_bytes - extracted_bytes)
         largest_images = []
         if args.media_mode in {"images", "full"}:
             for info in largest_images_all:
                 if len(largest_images) >= args.max_image_samples:
                     break
-                if info.size > remaining_bytes:
+                if extracted_bytes + info.size > args.max_extracted_bytes:
                     continue
                 largest_images.append(info)
-                remaining_bytes -= info.size
                 extracted_bytes += info.size
 
-        preview_names = ["preview.jpg", "preview-web.jpg", "preview-micro.jpg"]
         extracted_previews = []
-        for name in preview_names:
-            try:
-                info = archive.getinfo(name)
-            except KeyError:
-                continue
+        for name, info in preview_infos:
             extracted_previews.append(extract_member(archive, info, out_dir / "previews" / name))
 
         video_rows = []
@@ -295,6 +301,7 @@ def main() -> int:
         "media_extraction": {
             "mode": args.media_mode,
             "extracted_bytes": extracted_bytes,
+            "preview_samples": len(extracted_previews),
             "video_samples": len(largest_videos),
             "image_samples": len(largest_images),
             "max_extracted_bytes": args.max_extracted_bytes,

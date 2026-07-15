@@ -40,6 +40,24 @@ def transition_rows(spec: dict) -> list[dict]:
     return rows
 
 
+def ui_controls_still_required(rows: list[dict]) -> list[str]:
+    controls = ["Build In/Action/Build Out details and Build Order"]
+    if any(row.get("effect") == "magic-move" for row in rows):
+        controls[0:0] = [
+            "Magic Move match mode",
+            "Magic Move fade unmatched objects",
+            "Magic Move acceleration",
+        ]
+    for row in rows:
+        if row.get("effect") != "push":
+            continue
+        direction = " ".join(str(row.get("direction", "unspecified")).splitlines()).strip()
+        controls.append(
+            f"Push direction on slide {int(row['from_slide'])}: {direction or 'unspecified'}"
+        )
+    return controls
+
+
 def build_script(deck: Path, rows: list[dict], keep_open: bool) -> str:
     commands = []
     for row in rows:
@@ -47,6 +65,12 @@ def build_script(deck: Path, rows: list[dict], keep_open: bool) -> str:
         duration = float(row["duration"])
         delay = float(row.get("delay", 0))
         automatic = "true" if row.get("advance", "on-click") == "automatic" else "false"
+        if row["effect"] == "push":
+            direction = " ".join(str(row.get("direction", "unspecified")).splitlines()).strip()
+            commands.append(
+                f"-- Manual Keynote UI required: set Push direction on slide "
+                f"{int(row['from_slide'])} to {direction or 'unspecified'}"
+            )
         commands.append(
             f"set transition properties of slide {int(row['from_slide'])} of docRef to "
             f"{{transition effect:{effect}, transition duration:{duration}, "
@@ -54,16 +78,7 @@ def build_script(deck: Path, rows: list[dict], keep_open: bool) -> str:
         )
 
     close_line = "" if keep_open else "close docRef saving yes"
-    return f'''on pathBasename(posixPath)
-    set oldDelimiters to AppleScript's text item delimiters
-    set AppleScript's text item delimiters to "/"
-    set pathParts to text items of posixPath
-    set AppleScript's text item delimiters to oldDelimiters
-    return item -1 of pathParts
-end pathBasename
-
-set deckPath to {applescript_string(str(deck))}
-set expectedName to my pathBasename(deckPath)
+    return f'''set deckPath to {applescript_string(str(deck))}
 using terms from application id "com.apple.Keynote"
     tell application id "com.apple.Keynote"
         with timeout of 1800 seconds
@@ -73,9 +88,6 @@ using terms from application id "com.apple.Keynote"
                 repeat with candidate in documents
                     try
                         if POSIX path of (file of candidate) is deckPath then set docRef to candidate
-                    end try
-                    try
-                        if docRef is missing value and name of candidate is expectedName then set docRef to candidate
                     end try
                 end repeat
                 if docRef is not missing value then exit repeat
@@ -151,12 +163,7 @@ def main() -> int:
         "returncode": completed.returncode,
         "stdout": completed.stdout.strip(),
         "stderr": completed.stderr.strip(),
-        "ui_controls_still_required": [
-            "Magic Move match mode",
-            "Magic Move fade unmatched objects",
-            "Magic Move acceleration",
-            "Build In/Action/Build Out details and Build Order",
-        ],
+        "ui_controls_still_required": ui_controls_still_required(rows),
     }
     print(json.dumps(report, indent=2))
     return completed.returncode

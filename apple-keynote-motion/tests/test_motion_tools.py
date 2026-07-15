@@ -18,7 +18,12 @@ SKILL_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = SKILL_ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from apply_slide_transitions import build_script, copy_deck  # noqa: E402
+from apply_slide_transitions import (  # noqa: E402
+    build_script,
+    copy_deck,
+    ui_controls_still_required,
+)
+from analyze_keynote_reference import main as analyze_keynote_reference_main  # noqa: E402
 from build_private_asset_library import (  # noqa: E402
     classify_asset_name,
     deck_id,
@@ -27,7 +32,12 @@ from build_private_asset_library import (  # noqa: E402
     recover_utf8_zip_name,
     write_summary,
 )
-from analyze_transition_object_diffs import Diagnostics, load_objects  # noqa: E402
+from analyze_transition_object_diffs import (  # noqa: E402
+    Diagnostics,
+    SlideSize,
+    load_objects,
+    match_cost,
+)
 from analyze_playback_video import (  # noqa: E402
     boolean_runs,
     bridge_short_gaps,
@@ -168,6 +178,22 @@ class MotionSpecTests(unittest.TestCase):
         self.assertTrue(
             any(issue.path == "$.scenes[0].transition.to_slide" for issue in issues)
         )
+
+    def test_boolean_slide_numbers_are_rejected(self) -> None:
+        spec = valid_spec()
+        spec["scenes"][0]["states"][0]["slide"] = True
+        spec["scenes"][0]["transition"]["from_slide"] = True
+        paths = {issue.path for issue in validate(spec) if issue.severity == "error"}
+        self.assertIn("$.scenes[0].states[0].slide", paths)
+        self.assertIn("$.scenes[0].transition.from_slide", paths)
+
+    def test_boolean_build_slide_and_order_are_rejected(self) -> None:
+        spec = valid_spec()
+        spec["scenes"][0]["builds"][0]["slide"] = True
+        spec["scenes"][0]["builds"][0]["order"] = True
+        paths = {issue.path for issue in validate(spec) if issue.severity == "error"}
+        self.assertIn("$.scenes[0].builds[0].slide", paths)
+        self.assertIn("$.scenes[0].builds[0].order", paths)
 
     def test_relative_build_must_be_on_the_same_slide(self) -> None:
         spec = valid_spec()
@@ -442,6 +468,72 @@ class DeckCopyTests(unittest.TestCase):
             copy_deck(package, package_copy)
             self.assertEqual((package_copy / "index.apxl").read_text(encoding="utf-8"), "fixture")
 
+    def test_transition_script_binds_only_the_exact_document_path(self) -> None:
+        script = build_script(Path("/tmp/output.key"), [], keep_open=False)
+        self.assertIn("POSIX path of (file of candidate) is deckPath", script)
+        self.assertNotIn("name of candidate", script)
+        self.assertNotIn("expectedName", script)
+
+    def test_push_direction_is_reported_as_a_manual_ui_control(self) -> None:
+        rows = [
+            {
+                "from_slide": 4,
+                "to_slide": 5,
+                "effect": "push",
+                "duration": 0.75,
+                "advance": "on-click",
+                "delay": 0,
+                "direction": "left",
+            }
+        ]
+        script = build_script(Path("/tmp/output.key"), rows, keep_open=False)
+        controls = ui_controls_still_required(rows)
+        self.assertIn("Manual Keynote UI required", script)
+        self.assertIn("Push direction on slide 4: left", controls)
+
+
+class KeynoteReferenceAnalyzerTests(unittest.TestCase):
+    def make_archive(self, path: Path) -> None:
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("Index/Document.iwa", b"document")
+            archive.writestr("Index/Slide.iwa", b"slide")
+            archive.writestr("preview.jpg", b"preview-bytes")
+
+    def test_metadata_only_mode_does_not_extract_previews(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            deck = root / "reference.key"
+            output = root / "analysis"
+            self.make_archive(deck)
+            with patch.object(sys, "argv", ["analyze_keynote_reference.py", str(deck), str(output)]):
+                self.assertEqual(analyze_keynote_reference_main(), 0)
+            summary = json.loads((output / "archive-summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(summary["media_extraction"]["preview_samples"], 0)
+            self.assertEqual(summary["media_extraction"]["extracted_bytes"], 0)
+            self.assertFalse((output / "previews" / "preview.jpg").exists())
+
+    def test_preview_extraction_obeys_the_shared_byte_cap(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            deck = root / "reference.key"
+            output = root / "analysis"
+            self.make_archive(deck)
+            argv = [
+                "analyze_keynote_reference.py",
+                str(deck),
+                str(output),
+                "--media-mode",
+                "images",
+                "--max-extracted-bytes",
+                "1",
+            ]
+            with patch.object(sys, "argv", argv):
+                self.assertEqual(analyze_keynote_reference_main(), 0)
+            summary = json.loads((output / "archive-summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(summary["media_extraction"]["preview_samples"], 0)
+            self.assertEqual(summary["media_extraction"]["extracted_bytes"], 0)
+            self.assertFalse((output / "previews" / "preview.jpg").exists())
+
 
 class KeynoteArchiveTests(unittest.TestCase):
     def test_closes_outer_archive_when_enter_fails_after_open(self) -> None:
@@ -497,6 +589,24 @@ class KeynoteArchiveTests(unittest.TestCase):
 
 
 class ObjectDatasetTests(unittest.TestCase):
+    def test_rotation_matching_uses_the_shortest_circular_delta(self) -> None:
+        size = SlideSize(1920, 1080)
+        source = {
+            "x": 100.0,
+            "y": 100.0,
+            "width": 200.0,
+            "height": 200.0,
+            "rotation": 359.0,
+            "opacity": 100.0,
+            "object_index": 1,
+        }
+        near_wraparound = {**source, "rotation": 1.0}
+        far_rotation = {**source, "rotation": 181.0}
+        self.assertLess(
+            match_cost(source, near_wraparound, size, size),
+            match_cost(source, far_rotation, size, size),
+        )
+
     def test_uses_document_row_dimensions_as_the_default_slide_size(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tsv = Path(tmp) / "objects.tsv"
