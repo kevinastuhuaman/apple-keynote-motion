@@ -8,6 +8,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 import numpy as np
 
@@ -331,6 +332,23 @@ class DeckCopyTests(unittest.TestCase):
 
 
 class KeynoteArchiveTests(unittest.TestCase):
+    def test_closes_outer_archive_when_enter_fails_after_open(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            deck = Path(tmp) / "broken-after-open.key"
+            with zipfile.ZipFile(deck, "w") as zf:
+                zf.writestr("Index/Document.iwa", b"document")
+
+            outer = Mock()
+            outer.namelist.side_effect = RuntimeError("failed to read members")
+            archive = KeynoteArchive(deck)
+
+            with patch("keynote_archive.ZipFile", return_value=outer):
+                with self.assertRaisesRegex(RuntimeError, "failed to read members"):
+                    archive.__enter__()
+
+            outer.close.assert_called_once_with()
+            self.assertIsNone(archive.outer)
+
     def test_reads_direct_archive(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             deck = Path(tmp) / "direct.key"

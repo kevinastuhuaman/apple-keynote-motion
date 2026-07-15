@@ -45,6 +45,16 @@ class KeynoteArchive:
         if not is_zipfile(self.deck):
             raise ValueError(f"Deck is not a readable zip-style .key archive: {self.deck}")
 
+        try:
+            return self._open()
+        except BaseException:
+            try:
+                self.__exit__(None, None, None)
+            except Exception:
+                pass
+            raise
+
+    def _open(self) -> "KeynoteArchive":
         self.outer = ZipFile(self.deck)
         outer_names = set(self.outer.namelist())
         self.outer_entry_count = len(outer_names)
@@ -72,14 +82,22 @@ class KeynoteArchive:
         )
         for candidate in candidates:
             nested_bytes = BytesIO(self.outer.read(candidate))
+            nested: ZipFile | None = None
             try:
                 nested = ZipFile(nested_bytes)
+                has_document = "Index/Document.iwa" in set(nested.namelist())
             except Exception:
-                nested_bytes.close()
+                try:
+                    if nested is not None:
+                        nested.close()
+                finally:
+                    nested_bytes.close()
                 continue
-            if "Index/Document.iwa" not in set(nested.namelist()):
-                nested.close()
-                nested_bytes.close()
+            if not has_document:
+                try:
+                    nested.close()
+                finally:
+                    nested_bytes.close()
                 continue
 
             self.index = nested
@@ -89,8 +107,6 @@ class KeynoteArchive:
             break
 
         if self.index is None:
-            self.outer.close()
-            self.outer = None
             raise ValueError(
                 "Keynote archive has neither top-level Index/Document.iwa nor a valid Index.zip"
             )
@@ -124,15 +140,28 @@ class KeynoteArchive:
         return self
 
     def __exit__(self, exc_type, exc, traceback) -> None:
-        if self.index is not None and self.index is not self.outer:
-            self.index.close()
-        if self.outer is not None:
-            self.outer.close()
-        if self._nested_bytes is not None:
-            self._nested_bytes.close()
-        self.index = None
-        self.outer = None
-        self._nested_bytes = None
+        resources = (
+            self.index if self.index is not self.outer else None,
+            self.outer,
+            self._nested_bytes,
+        )
+        first_error: Exception | None = None
+        try:
+            for resource in resources:
+                if resource is None:
+                    continue
+                try:
+                    resource.close()
+                except Exception as error:
+                    if first_error is None:
+                        first_error = error
+        finally:
+            self.index = None
+            self.outer = None
+            self._nested_bytes = None
+
+        if first_error is not None and exc_type is None:
+            raise first_error
 
     def infolist(self) -> list[ArchiveMember]:
         return list(self._members.values())
