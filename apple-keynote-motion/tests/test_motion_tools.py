@@ -1518,6 +1518,18 @@ class FinalReviewRegressionTests(unittest.TestCase):
                     2,
                 )
 
+    def test_visual_export_normalizes_paths_and_cleanup_on_errors(self) -> None:
+        script = (SCRIPTS / "export_keynote_visuals.applescript").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("on canonicalPath(pathText)", script)
+        self.assertIn("set deckPath to my canonicalPath(item 1 of argv)", script)
+        self.assertIn("on error errorMessage number errorNumber", script)
+        self.assertGreaterEqual(
+            script.count("if openedHere and docRef is not missing value then"),
+            2,
+        )
+
     def test_combined_motion_class_counts_cover_all_document_slides(self) -> None:
         text = (
             SKILL_ROOT / "references" / "combined-motion-taxonomy.md"

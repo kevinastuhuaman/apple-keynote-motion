@@ -19,12 +19,16 @@ on documentForPath(deckPath)
 	return missing value
 end documentForPath
 
+on canonicalPath(pathText)
+	return POSIX path of ((POSIX file (pathText as text)) as alias)
+end canonicalPath
+
 on run argv
 	if (count of argv) is less than 2 then
 		error "usage: osascript export_keynote_visuals.applescript <deck.key> <out_dir> [images|stages|both]"
 	end if
 
-	set deckPath to item 1 of argv
+	set deckPath to my canonicalPath(item 1 of argv)
 	set outputRoot to item 2 of argv
 	set exportMode to "images"
 	if (count of argv) is greater than or equal to 3 then set exportMode to item 3 of argv
@@ -33,14 +37,15 @@ on run argv
 	set slideImagesDir to outputRoot & "/slide-images"
 	set allStagesPdf to outputRoot & "/all-stages.pdf"
 
-	set docRef to my documentForPath(deckPath)
 	set openedHere to false
+	set docRef to my documentForPath(deckPath)
 
 	using terms from application id "com.apple.Keynote"
 		tell application id "com.apple.Keynote"
-			with timeout of 3600 seconds
-				if docRef is missing value then
-					open (POSIX file deckPath)
+			try
+				with timeout of 3600 seconds
+					if docRef is missing value then
+						open (POSIX file deckPath)
 					set openedHere to true
 				end if
 
@@ -59,8 +64,16 @@ on run argv
 					export docRef to (POSIX file allStagesPdf) as PDF with properties {export style:IndividualSlides, all stages:true, skipped slides:true, PDF image quality:Best}
 				end if
 
-				if openedHere then close docRef saving no
-			end timeout
+				end timeout
+			on error errorMessage number errorNumber
+				if openedHere and docRef is not missing value then
+					try
+						close docRef saving no
+					end try
+				end if
+				error errorMessage number errorNumber
+			end try
+			if openedHere and docRef is not missing value then close docRef saving no
 		end tell
 	end using terms from
 end run
