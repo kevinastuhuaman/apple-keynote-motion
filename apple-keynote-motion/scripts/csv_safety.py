@@ -3,15 +3,26 @@
 
 from __future__ import annotations
 
+import unicodedata
 from typing import Any, Mapping
 
 
-FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+FORMULA_PREFIXES = ("=", "+", "-", "@")
+
+
+def formula_candidate(value: str) -> str:
+    index = 0
+    while index < len(value):
+        character = value[index]
+        if not character.isspace() and unicodedata.category(character) != "Cc":
+            break
+        index += 1
+    return value[index:]
 
 
 def spreadsheet_safe(value: Any) -> Any:
     """Prevent spreadsheet applications from evaluating untrusted text."""
-    if isinstance(value, str) and value.startswith(FORMULA_PREFIXES):
+    if isinstance(value, str) and formula_candidate(value).startswith(FORMULA_PREFIXES):
         return "'" + value
     return value
 

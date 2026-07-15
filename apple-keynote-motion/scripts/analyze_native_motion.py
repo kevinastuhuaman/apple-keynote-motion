@@ -174,15 +174,17 @@ def clean_text_candidate(text: str) -> bool:
 
 def normalize_effects(strings: list[StringHit]) -> tuple[str, dict[str, list[str]], list[str]]:
     values = [s.value for s in strings]
-    effect_values = [v for v in values if is_effect_identifier(v)]
 
     transition = "unknown"
+    transition_position: int | None = None
     for idx, value in enumerate(values):
         if value != "Transition":
             continue
-        for follow in values[idx + 1 : idx + 8]:
+        for follow_index in range(idx + 1, min(idx + 8, len(values))):
+            follow = values[follow_index]
             if follow == "none" or follow in TRANSITION_EFFECTS or follow.startswith("apple:magic-move"):
                 transition = follow
+                transition_position = follow_index
                 break
         if transition != "unknown":
             break
@@ -192,8 +194,10 @@ def normalize_effects(strings: list[StringHit]) -> tuple[str, dict[str, list[str
     media_triggers: list[str] = []
     transition_effects: list[str] = []
     unclassified_effects: list[str] = []
-    for value in effect_values:
-        if value == transition:
+    for value_index, value in enumerate(values):
+        if not is_effect_identifier(value):
+            continue
+        if value_index == transition_position:
             transition_effects.append(value)
         elif value in MEDIA_TRIGGERS:
             media_triggers.append(value)

@@ -54,7 +54,16 @@ def discover_numbered_images(
         if min(mapping) == 0:
             mapping = {number + 1: path for number, path in mapping.items()}
         if min(mapping) == 1:
+            page_numbers = sorted(mapping)
+            if page_numbers != list(range(1, len(mapping) + 1)):
+                raise ValueError(
+                    f"Numbered images in {directory} must form a contiguous sequence"
+                )
             return dict(sorted(mapping.items()))
+        if prefix is not None:
+            raise ValueError(
+                f"Numbered images in {directory} must start at page 0 or 1"
+            )
     return {index: path for index, path in enumerate(paths, start=1)}
 
 

@@ -31,8 +31,10 @@ from apply_slide_transitions import (  # noqa: E402
 from analyze_keynote_reference import main as analyze_keynote_reference_main  # noqa: E402
 from analyze_native_motion import (  # noqa: E402
     Snappy as NativeMotionSnappy,
+    StringHit,
     analyze as analyze_native_motion_archive,
     decompress_iwa as decompress_native_iwa,
+    normalize_effects,
 )
 from build_private_asset_library import (  # noqa: E402
     Detection,
@@ -47,7 +49,10 @@ from build_private_asset_library import (  # noqa: E402
 )
 from analyze_transition_object_diffs import (  # noqa: E402
     Diagnostics,
+    MotionIndex,
+    ObjectDataset,
     SlideSize,
+    analyze as analyze_object_transitions,
     load_objects,
     match_cost,
     minimum_cost_eligible_pairs,
@@ -60,7 +65,10 @@ from analyze_playback_video import (  # noqa: E402
     probe_video,
     visual_energy_fit,
 )
-from analyze_text_motion_layers import text_objects_for_slide  # noqa: E402
+from analyze_text_motion_layers import (  # noqa: E402
+    analyze as analyze_text_transitions,
+    text_objects_for_slide,
+)
 from audit_magic_move_export_risks import (  # noqa: E402
     classify_risk,
     is_zero_geometry,
@@ -81,6 +89,7 @@ from make_build_stage_storyboards import discover_pages  # noqa: E402
 from make_transition_storyboards import load_pairs  # noqa: E402
 from map_build_stages import (  # noqa: E402
     confidence,
+    discover_numbered_images,
     monotonic_alignment,
     render_pdf_pages,
     stage_kind,
@@ -1362,8 +1371,51 @@ class FinalReviewRegressionTests(unittest.TestCase):
         self.assertIs(pairs[0][1], destination[0])
         self.assertLess(elapsed, 2.0)
 
+    def test_transition_analyzers_skip_pairs_without_a_destination_slide(self) -> None:
+        dataset = ObjectDataset(
+            objects={1: []},
+            slide_settings={1: {}},
+            slide_sizes={},
+            default_size=SlideSize(1920.0, 1080.0),
+            object_count=0,
+        )
+        transitions = [{"slide_number": 1, "archive_name": "Index/Slide-1.iwa"}]
+        for analyzer in (analyze_object_transitions, analyze_text_transitions):
+            diagnostics = Diagnostics()
+            with self.subTest(analyzer=analyzer.__module__):
+                rows, _methods = analyzer(
+                    transitions,
+                    MotionIndex({}, {}),
+                    dataset,
+                    diagnostics,
+                )
+                self.assertEqual(rows, [])
+                self.assertEqual(diagnostics.counts["missing_destination_slide"], 1)
+
+    def test_native_motion_preserves_a_build_matching_the_transition_id(self) -> None:
+        transition, effect_groups, _visible_text = normalize_effects(
+            [
+                StringHit("Transition", 0),
+                StringHit("apple:dissolve", 10),
+                StringHit("apple:dissolve", 20),
+            ]
+        )
+        self.assertEqual(transition, "apple:dissolve")
+        self.assertEqual(effect_groups["transition_effects"], ["apple:dissolve"])
+        self.assertEqual(effect_groups["build_effects"], ["apple:dissolve"])
+
     def test_csv_safety_neutralizes_spreadsheet_formulas(self) -> None:
-        for value in ("=1+1", "+cmd", "-2+3", "@SUM(A:A)", "\t=1", "\r=1"):
+        for value in (
+            "=1+1",
+            "+cmd",
+            "-2+3",
+            "@SUM(A:A)",
+            "\t=1",
+            "\r=1",
+            "  =1+1",
+            "\n@SUM(A:A)",
+            "\x00+cmd",
+        ):
             with self.subTest(value=value):
                 self.assertEqual(spreadsheet_safe(value), "'" + value)
         self.assertEqual(
@@ -1497,6 +1549,14 @@ class FinalReviewRegressionTests(unittest.TestCase):
                 with self.assertRaises(subprocess.CalledProcessError):
                     render_pdf_pages(pdf, pages, 640, force=True)
             self.assertEqual(stale.read_bytes(), b"known-good")
+
+    def test_stage_page_cache_rejects_gapped_numbering(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            pages = Path(tmp)
+            (pages / "stage-page-1.jpg").touch()
+            (pages / "stage-page-3.jpg").touch()
+            with self.assertRaisesRegex(ValueError, "contiguous sequence"):
+                discover_numbered_images(pages, prefix="stage-page")
 
     def test_confidence_retains_absolute_quality_limits(self) -> None:
         self.assertEqual(confidence(0.50, 0.50), "low")

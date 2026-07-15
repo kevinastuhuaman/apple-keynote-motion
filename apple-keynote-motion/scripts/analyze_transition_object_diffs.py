@@ -97,6 +97,13 @@ class ObjectDataset:
     default_size: SlideSize | None
     object_count: int
 
+    def has_slide(self, slide_number: int) -> bool:
+        return (
+            slide_number in self.slide_settings
+            or slide_number in self.slide_sizes
+            or slide_number in self.objects
+        )
+
     def size_for(self, slide_number: int) -> SlideSize:
         size = self.slide_sizes.get(slide_number, self.default_size)
         if size is None:
@@ -1334,6 +1341,13 @@ def analyze(
     match_methods: Counter[str] = Counter()
     for transition in transitions:
         slide_number = transition["slide_number"]
+        if not dataset.has_slide(slide_number + 1):
+            diagnostics.warn(
+                "missing_destination_slide",
+                f"slide {slide_number}: no destination slide {slide_number + 1} "
+                "was found in the object TSV; skipping transition",
+            )
+            continue
         source_size = dataset.size_for(slide_number)
         dest_size = dataset.size_for(slide_number + 1)
         motion = motions.find(transition["archive_name"])
