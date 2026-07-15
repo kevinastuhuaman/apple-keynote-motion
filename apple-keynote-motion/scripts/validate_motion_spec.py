@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from dataclasses import dataclass, asdict
 from pathlib import Path
@@ -78,7 +79,12 @@ def object_ids(state: dict[str, Any]) -> set[str]:
 
 
 def numeric(value: Any) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(value)
+    except (OverflowError, TypeError):
+        return False
 
 
 def positive_integer(value: Any) -> bool:
@@ -100,6 +106,7 @@ def validate(spec: Any) -> list[Issue]:
     require(bool(scenes), "error", "$.scenes", "Add at least one scene.", issues)
 
     seen_scene_ids: set[str] = set()
+    seen_transition_sources: set[int] = set()
     for scene_index, scene in enumerate(scenes):
         path = f"$.scenes[{scene_index}]"
         require(isinstance(scene, dict), "error", path, "Scene must be an object.", issues)
@@ -173,6 +180,15 @@ def validate(spec: Any) -> list[Issue]:
                 has_to_state = positive_integer(to_slide) and to_slide in state_by_slide
                 require(has_from_state, "error", f"{transition_path}.from_slide", "from_slide must name a scene state.", issues)
                 require(has_to_state, "error", f"{transition_path}.to_slide", "to_slide must name a scene state.", issues)
+                if positive_integer(from_slide):
+                    require(
+                        from_slide not in seen_transition_sources,
+                        "error",
+                        f"{transition_path}.from_slide",
+                        "Each source slide can define only one transition across the motion spec.",
+                        issues,
+                    )
+                    seen_transition_sources.add(from_slide)
                 if has_from_state and has_to_state:
                     require(
                         to_slide == from_slide + 1,
@@ -196,7 +212,15 @@ def validate(spec: Any) -> list[Issue]:
                 if effect == "push":
                     require(isinstance(transition.get("direction"), str), "warning", f"{transition_path}.direction", "Record Push direction from the Keynote UI.", issues)
 
-        builds = as_list(scene.get("builds"))
+        builds_value = scene.get("builds", [])
+        require(
+            isinstance(builds_value, list),
+            "error",
+            f"{path}.builds",
+            "Builds must be an array.",
+            issues,
+        )
+        builds = builds_value if isinstance(builds_value, list) else []
         seen_build_ids: set[str] = set()
         seen_orders: set[tuple[int, int]] = set()
         for build_index, build in enumerate(builds):

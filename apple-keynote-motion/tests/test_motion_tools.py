@@ -186,6 +186,34 @@ class MotionSpecTests(unittest.TestCase):
         self.assertIn("$.scenes[0].transition.magic_move.fade_unmatched", paths)
         self.assertIn("$.scenes[0].transition.magic_move.acceleration", paths)
 
+    def test_non_finite_numbers_are_rejected(self) -> None:
+        spec = valid_spec()
+        spec["scenes"][0]["transition"]["delay"] = float("inf")
+        spec["scenes"][0]["states"][0]["objects"][0]["frame"]["x"] = float("nan")
+        paths = {issue.path for issue in validate(spec) if issue.severity == "error"}
+        self.assertIn("$.scenes[0].transition.delay", paths)
+        self.assertIn("$.scenes[0].states[0].objects[0].frame.x", paths)
+
+    def test_builds_must_be_an_array(self) -> None:
+        spec = valid_spec()
+        spec["scenes"][0]["builds"] = {"id": "not-an-array"}
+        paths = {issue.path for issue in validate(spec) if issue.severity == "error"}
+        self.assertIn("$.scenes[0].builds", paths)
+
+    def test_source_slide_can_define_only_one_transition(self) -> None:
+        spec = valid_spec()
+        duplicate = json.loads(json.dumps(spec["scenes"][0]))
+        duplicate["id"] = "duplicate-transition"
+        spec["scenes"].append(duplicate)
+        issues = validate(spec)
+        self.assertTrue(
+            any(
+                issue.path == "$.scenes[1].transition.from_slide"
+                and "only one transition" in issue.message
+                for issue in issues
+            )
+        )
+
     def test_build_target_must_exist_on_that_slide(self) -> None:
         spec = valid_spec()
         spec["scenes"][0]["builds"][0]["target"] = "missing"
@@ -517,6 +545,8 @@ class DeckCopyTests(unittest.TestCase):
         self.assertIn("POSIX path of (file of candidate) is deckPath", script)
         self.assertNotIn("name of candidate", script)
         self.assertNotIn("expectedName", script)
+        self.assertIn("on error errorMessage number errorNumber", script)
+        self.assertIn("close docRef saving no", script)
 
     def test_push_direction_is_reported_as_a_manual_ui_control(self) -> None:
         rows = [
@@ -1160,6 +1190,65 @@ class CorpusSummaryTests(unittest.TestCase):
             self.assertEqual(rows[0]["slides_with_media"], 1)
             self.assertEqual(rows[0]["motion_density"], 1.0)
 
+    def test_ordered_slide_filter_excludes_orphan_motion_records(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            inventory = root / "inventory" / "sample"
+            native = root / "native-motion" / "sample"
+            order = native / "slide-order"
+            inventory.mkdir(parents=True)
+            order.mkdir(parents=True)
+            (inventory / "archive-summary.json").write_text(
+                json.dumps({"deck": "/source/sample.key"}), encoding="utf-8"
+            )
+            (native / "native-motion-summary.json").write_text(
+                json.dumps(
+                    {
+                        "slides_archive_sorted": [
+                            {
+                                "archive_name": "Index/Slide-1.iwa",
+                                "transition": "none",
+                                "motion_class": "STATIC",
+                                "build_effects": [],
+                                "action_effects": [],
+                                "media_triggers": [],
+                            },
+                            {
+                                "archive_name": "Index/Slide-2.iwa",
+                                "transition": "apple:dissolve",
+                                "motion_class": "TRANSITION_ONLY",
+                                "build_effects": [],
+                                "action_effects": [],
+                                "media_triggers": [],
+                            },
+                            {
+                                "archive_name": "Index/Orphan.iwa",
+                                "transition": "apple:push",
+                                "motion_class": "BUILD_ONLY",
+                                "build_effects": ["apple:appear"],
+                                "action_effects": [],
+                                "media_triggers": [],
+                            },
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (order / "slide-order-summary.json").write_text(
+                json.dumps({"ordered_slide_count": 2}), encoding="utf-8"
+            )
+            with (order / "slide-order.csv").open("w", newline="", encoding="utf-8") as stream:
+                writer = csv.DictWriter(stream, fieldnames=("slide_number", "archive_name"))
+                writer.writeheader()
+                writer.writerow({"slide_number": 1, "archive_name": "Index/Slide-1.iwa"})
+                writer.writerow({"slide_number": 2, "archive_name": "Index/Slide-2.iwa"})
+
+            row = build_rows(root)[0]
+            self.assertEqual(row["slide_count"], 2)
+            self.assertEqual(row["slides_with_builds"], 0)
+            self.assertEqual(row["push"], 0)
+            self.assertEqual(row["motion_density"], 0.5)
+
 
 class PrivateAssetLibraryTests(unittest.TestCase):
     def test_media_metadata_treats_na_duration_as_missing(self) -> None:
@@ -1549,6 +1638,65 @@ class FinalReviewRegressionTests(unittest.TestCase):
                 with self.assertRaises(subprocess.CalledProcessError):
                     render_pdf_pages(pdf, pages, 640, force=True)
             self.assertEqual(stale.read_bytes(), b"known-good")
+
+    def test_force_render_repairs_a_gapped_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pdf = root / "stages.pdf"
+            pdf.touch()
+            pages = root / "pages"
+            pages.mkdir()
+            (pages / "stage-page-1.jpg").write_bytes(b"stale-one")
+            stale_three = pages / "stage-page-3.jpg"
+            stale_three.write_bytes(b"stale-three")
+
+            def render_pages(command: list[str], **_kwargs: object) -> None:
+                Path(command[-1] + "-1.jpg").write_bytes(b"replacement-one")
+                Path(command[-1] + "-2.jpg").write_bytes(b"replacement-two")
+
+            with (
+                patch("map_build_stages.pdf_page_count", return_value=2),
+                patch("map_build_stages.shutil.which", return_value="/usr/bin/pdftoppm"),
+                patch("map_build_stages.subprocess.run", side_effect=render_pages),
+            ):
+                render_pdf_pages(pdf, pages, 640, force=True)
+
+            self.assertEqual(
+                (pages / "stage-page-1.jpg").read_bytes(), b"replacement-one"
+            )
+            self.assertEqual(
+                (pages / "stage-page-2.jpg").read_bytes(), b"replacement-two"
+            )
+            self.assertFalse(stale_three.exists())
+
+    def test_stage_page_cache_is_invalidated_when_pdf_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pdf = root / "stages.pdf"
+            pdf.write_bytes(b"first")
+            pages = root / "pages"
+            render_count = 0
+
+            def render_page(command: list[str], **_kwargs: object) -> None:
+                nonlocal render_count
+                render_count += 1
+                source = Path(command[-2]).read_bytes()
+                Path(command[-1] + "-1.jpg").write_bytes(source)
+
+            with (
+                patch("map_build_stages.pdf_page_count", return_value=1),
+                patch("map_build_stages.shutil.which", return_value="/usr/bin/pdftoppm"),
+                patch("map_build_stages.subprocess.run", side_effect=render_page),
+            ):
+                render_pdf_pages(pdf, pages, 640, force=False)
+                render_pdf_pages(pdf, pages, 640, force=False)
+                self.assertEqual(render_count, 1)
+                pdf.write_bytes(b"second")
+                render_pdf_pages(pdf, pages, 640, force=False)
+
+            self.assertEqual(render_count, 2)
+            self.assertEqual((pages / "stage-page-1.jpg").read_bytes(), b"second")
+            self.assertTrue((pages / ".stage-page-cache.json").is_file())
 
     def test_stage_page_cache_rejects_gapped_numbering(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

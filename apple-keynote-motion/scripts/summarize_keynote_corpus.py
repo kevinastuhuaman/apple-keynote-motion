@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -29,10 +30,26 @@ def build_rows(corpus_root: Path) -> list[dict[str, Any]]:
 
         inventory = read_json(inventory_path)
         native = read_json(native_path)
-        order = read_json(order_path) if order_path.exists() else {}
-        slides = native.get("slides_archive_sorted", [])
-        transition_counts = native.get("transition_counts", {})
-        motion_classes = native.get("motion_class_counts", {})
+        all_slides = native.get("slides_archive_sorted", [])
+        order_csv_path = order_path.parent / "slide-order.csv"
+        if order_csv_path.exists():
+            with order_csv_path.open(newline="", encoding="utf-8") as stream:
+                order_rows = list(csv.DictReader(stream))
+            ordered_names = [row.get("archive_name", "") for row in order_rows]
+            ordered_name_set = {name for name in ordered_names if name}
+            slides = [
+                slide
+                for slide in all_slides
+                if slide.get("archive_name") in ordered_name_set
+            ]
+            slide_count = len(ordered_names)
+            transition_counts = dict(Counter(slide.get("transition") for slide in slides))
+            motion_classes = dict(Counter(slide.get("motion_class") for slide in slides))
+        else:
+            slides = all_slides
+            slide_count = len(slides)
+            transition_counts = native.get("transition_counts", {})
+            motion_classes = native.get("motion_class_counts", {})
 
         slides_with_builds = sum(bool(slide.get("build_effects")) for slide in slides)
         slides_with_actions = sum(bool(slide.get("action_effects")) for slide in slides)
@@ -64,7 +81,6 @@ def build_rows(corpus_root: Path) -> list[dict[str, Any]]:
             if name not in known_common and count
         }
 
-        slide_count = int(order.get("ordered_slide_count", native.get("slide_count", 0)))
         rows.append(
             {
                 "slug": slug,
@@ -72,7 +88,11 @@ def build_rows(corpus_root: Path) -> list[dict[str, Any]]:
                 "archive_layout": inventory.get("archive_layout", native.get("archive_layout")),
                 "size_bytes": int(inventory.get("deck_size_bytes", 0)),
                 "slide_count": slide_count,
-                "transition_slide_count": int(native.get("transition_slide_count", 0)),
+                "transition_slide_count": sum(
+                    count
+                    for name, count in transition_counts.items()
+                    if name not in {None, "none", "unknown"}
+                ),
                 "magic_move": int(
                     transition_counts.get("apple:magic-move-implied-motion-path", 0)
                 ),

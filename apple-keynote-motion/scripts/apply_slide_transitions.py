@@ -77,26 +77,35 @@ def build_script(deck: Path, rows: list[dict], keep_open: bool) -> str:
             f"transition delay:{delay}, automatic transition:{automatic}}}"
         )
 
-    close_line = "" if keep_open else "close docRef saving yes"
+    close_lines = "" if keep_open else "close docRef saving yes\n            set docRef to missing value"
     return f'''set deckPath to {applescript_string(str(deck))}
 using terms from application id "com.apple.Keynote"
     tell application id "com.apple.Keynote"
         with timeout of 1800 seconds
-            open (POSIX file deckPath)
             set docRef to missing value
-            repeat with waitCount from 1 to 1800
-                repeat with candidate in documents
-                    try
-                        if POSIX path of (file of candidate) is deckPath then set docRef to candidate
-                    end try
+            try
+                open (POSIX file deckPath)
+                repeat with waitCount from 1 to 1800
+                    repeat with candidate in documents
+                        try
+                            if POSIX path of (file of candidate) is deckPath then set docRef to candidate
+                        end try
+                    end repeat
+                    if docRef is not missing value then exit repeat
+                    delay 1
                 end repeat
-                if docRef is not missing value then exit repeat
-                delay 1
-            end repeat
-            if docRef is missing value then error "Could not bind the requested Keynote document: " & deckPath
-            {chr(10).join(commands)}
-            save docRef
-            {close_line}
+                if docRef is missing value then error "Could not bind the requested Keynote document: " & deckPath
+                {chr(10).join(commands)}
+                save docRef
+                {close_lines}
+            on error errorMessage number errorNumber
+                if docRef is not missing value then
+                    try
+                        close docRef saving no
+                    end try
+                end if
+                error errorMessage number errorNumber
+            end try
         end timeout
     end tell
 end using terms from

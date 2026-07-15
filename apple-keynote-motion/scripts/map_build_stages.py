@@ -28,6 +28,7 @@ from csv_safety import spreadsheet_safe_row
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff"}
 HIGH_CONFIDENCE_MAX = 0.08
 MEDIUM_CONFIDENCE_MAX = 0.16
+CACHE_METADATA_NAME = ".stage-page-cache.json"
 
 
 def numeric_suffix(path: Path) -> int | None:
@@ -85,12 +86,47 @@ def render_pdf_pages(pdf_path: Path, pages_dir: Path, width: int, force: bool) -
         and path.suffix.lower() in IMAGE_EXTS
         and path.stem.startswith("stage-page-")
     )
+    metadata_path = pages_dir / CACHE_METADATA_NAME
+    source_identity = {
+        "schema_version": 1,
+        "pdf_sha256": file_sha256(pdf_path),
+        "render_width": width,
+        "format": "jpeg",
+        "quality": 84,
+    }
+    expected = pdf_page_count(pdf_path)
+
+    cached_identity: dict[str, object] | None = None
+    if metadata_path.is_file():
+        try:
+            candidate = json.loads(metadata_path.read_text(encoding="utf-8"))
+            if isinstance(candidate, dict):
+                cached_identity = candidate
+        except (OSError, json.JSONDecodeError):
+            cached_identity = None
+
+    existing = (
+        discover_numbered_images(pages_dir, prefix="stage-page")
+        if generated_images and not force
+        else {}
+    )
+    cache_matches = bool(existing) and cached_identity is not None
+    if cache_matches:
+        cache_matches = all(
+            cached_identity.get(key) == value for key, value in source_identity.items()
+        ) and cached_identity.get("page_count") == len(existing)
+    if (
+        not force
+        and cache_matches
+        and (expected is None or len(existing) == expected)
+    ):
+        return
+
     pdftoppm = shutil.which("pdftoppm")
-    if force and not pdftoppm:
+    if not pdftoppm:
         raise RuntimeError(
             "pdftoppm is required. Install Poppler before mapping build stages."
         )
-    expected = pdf_page_count(pdf_path)
 
     def render_to(prefix: Path) -> None:
         if not pdftoppm:
@@ -111,55 +147,52 @@ def render_pdf_pages(pdf_path: Path, pages_dir: Path, width: int, force: bool) -
         ]
         subprocess.run(command, check=True)
 
-    if force:
-        with tempfile.TemporaryDirectory(
-            prefix="keynote-stage-render-", dir=pages_dir.parent
-        ) as temporary:
-            staging_dir = Path(temporary)
-            render_to(staging_dir / "stage-page")
-            staged_map = discover_numbered_images(staging_dir, prefix="stage-page")
-            staged_images = list(staged_map.values())
-            if expected is not None and len(staged_images) != expected:
-                raise ValueError(
-                    f"Replacement render produced {len(staged_images)} pages, "
-                    f"but PDF reports {expected}."
-                )
+    with tempfile.TemporaryDirectory(
+        prefix="keynote-stage-render-", dir=pages_dir.parent
+    ) as temporary:
+        staging_dir = Path(temporary)
+        render_to(staging_dir / "stage-page")
+        staged_map = discover_numbered_images(staging_dir, prefix="stage-page")
+        staged_images = list(staged_map.values())
+        if expected is not None and len(staged_images) != expected:
+            raise ValueError(
+                f"Replacement render produced {len(staged_images)} pages, "
+                f"but PDF reports {expected}."
+            )
 
-            backup_dir = staging_dir / "previous"
-            backup_dir.mkdir()
-            moved_previous: list[tuple[Path, Path]] = []
-            installed: list[Path] = []
-            try:
-                for previous in generated_images:
-                    backup = backup_dir / previous.name
-                    previous.replace(backup)
-                    moved_previous.append((backup, previous))
-                for staged in staged_images:
-                    destination = pages_dir / staged.name
-                    staged.replace(destination)
-                    installed.append(destination)
-            except BaseException:
-                for destination in installed:
-                    destination.unlink(missing_ok=True)
-                for backup, previous in moved_previous:
-                    if backup.exists():
-                        backup.replace(previous)
-                raise
-        return
-
-    existing = (
-        discover_numbered_images(pages_dir, prefix="stage-page")
-        if generated_images
-        else {}
-    )
-    if existing:
-        if expected is None or len(existing) == expected:
-            return
-        raise ValueError(
-            f"Pages directory has {len(existing)} files but PDF reports {expected} pages. "
-            "Use a new empty --pages-dir rather than aligning a partial render."
+        staged_metadata = staging_dir / CACHE_METADATA_NAME
+        staged_metadata.write_text(
+            json.dumps(
+                {**source_identity, "page_count": len(staged_images)},
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
         )
-    render_to(pages_dir / "stage-page")
+        backup_dir = staging_dir / "previous"
+        backup_dir.mkdir()
+        previous_paths = [*generated_images]
+        if metadata_path.exists():
+            previous_paths.append(metadata_path)
+        moved_previous: list[tuple[Path, Path]] = []
+        installed: list[Path] = []
+        try:
+            for previous in previous_paths:
+                backup = backup_dir / previous.name
+                previous.replace(backup)
+                moved_previous.append((backup, previous))
+            for staged in [*staged_images, staged_metadata]:
+                destination = pages_dir / staged.name
+                staged.replace(destination)
+                installed.append(destination)
+        except BaseException:
+            for destination in installed:
+                destination.unlink(missing_ok=True)
+            for backup, previous in moved_previous:
+                if backup.exists():
+                    backup.replace(previous)
+            raise
 
 
 def visual_feature(path: Path) -> np.ndarray:
