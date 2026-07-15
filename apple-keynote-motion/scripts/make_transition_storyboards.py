@@ -62,6 +62,13 @@ def parse_pair(pair_text: str) -> tuple[int, int] | None:
     return int(match.group(1)), int(match.group(2))
 
 
+def positive_pairs_per_page(value: str) -> int:
+    number = int(value)
+    if number <= 0:
+        raise argparse.ArgumentTypeError("pairs per page must be a positive integer")
+    return number
+
+
 def choose_numbering(rows: list[dict[str, str]], image_map: dict[int, Path], requested: str) -> str:
     if requested != "auto":
         return requested
@@ -192,7 +199,7 @@ def main() -> int:
     parser.add_argument("--slides-dir", type=Path, required=True)
     parser.add_argument("--pairs-csv", type=Path, required=True)
     parser.add_argument("--out-dir", type=Path, required=True)
-    parser.add_argument("--pairs-per-page", type=int, default=3)
+    parser.add_argument("--pairs-per-page", type=positive_pairs_per_page, default=3)
     parser.add_argument("--include-diff", action="store_true")
     parser.add_argument(
         "--numbering",

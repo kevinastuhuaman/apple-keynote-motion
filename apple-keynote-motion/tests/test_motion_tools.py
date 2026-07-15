@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import csv
 import io
 import inspect
@@ -26,6 +27,7 @@ import audit_magic_move_export_risks as magic_move_audit  # noqa: E402
 from apply_slide_transitions import (  # noqa: E402
     build_script,
     copy_deck,
+    output_is_inside_source_package,
     ui_controls_still_required,
 )
 from analyze_keynote_reference import main as analyze_keynote_reference_main  # noqa: E402
@@ -86,7 +88,7 @@ from extract_native_build_timeline import (  # noqa: E402
 from csv_safety import spreadsheet_safe, spreadsheet_safe_row  # noqa: E402
 from keynote_archive import KeynoteArchive  # noqa: E402
 from make_build_stage_storyboards import discover_pages  # noqa: E402
-from make_transition_storyboards import load_pairs  # noqa: E402
+from make_transition_storyboards import load_pairs, positive_pairs_per_page  # noqa: E402
 from map_build_stages import (  # noqa: E402
     confidence,
     discover_numbered_images,
@@ -483,6 +485,13 @@ class MagicMoveExportRiskTests(unittest.TestCase):
 
 
 class NumberingTests(unittest.TestCase):
+    def test_storyboard_pairs_per_page_must_be_positive(self) -> None:
+        self.assertEqual(positive_pairs_per_page("3"), 3)
+        for value in ("0", "-1"):
+            with self.subTest(value=value):
+                with self.assertRaises(argparse.ArgumentTypeError):
+                    positive_pairs_per_page(value)
+
     def test_reference_parser_ignores_trailing_record_noise(self) -> None:
         self.assertEqual(first_ref_field(b"\x12\x02\x08\x2a\x07", 2), 42)
 
@@ -539,6 +548,18 @@ class DeckCopyTests(unittest.TestCase):
             package_copy = root / "package-copy.key"
             copy_deck(package, package_copy)
             self.assertEqual((package_copy / "index.apxl").read_text(encoding="utf-8"), "fixture")
+
+    def test_output_cannot_be_nested_inside_a_source_package(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            package = root / "source.key"
+            package.mkdir()
+            self.assertTrue(
+                output_is_inside_source_package(package, package / "copy.key")
+            )
+            self.assertFalse(
+                output_is_inside_source_package(package, root / "copy.key")
+            )
 
     def test_transition_script_binds_only_the_exact_document_path(self) -> None:
         script = build_script(Path("/tmp/output.key"), [], keep_open=False)
@@ -1285,6 +1306,26 @@ class PrivateAssetLibraryTests(unittest.TestCase):
             summary = (Path(tmp) / "LIBRARY.md").read_text(encoding="utf-8")
             self.assertIn("Indexed occurrence bytes: **0**", summary)
 
+    def test_library_summary_excludes_unreferenced_object_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            connection = sqlite3.connect(":memory:")
+            try:
+                connection.executescript(
+                    """
+                    CREATE TABLE objects (sha256 TEXT PRIMARY KEY, kind TEXT);
+                    CREATE TABLE occurrences (deck_id TEXT, sha256 TEXT, size_bytes INTEGER);
+                    INSERT INTO objects VALUES ('current', 'image');
+                    INSERT INTO objects VALUES ('orphaned', 'image');
+                    INSERT INTO occurrences VALUES ('deck', 'current', 42);
+                    """
+                )
+                write_summary(connection, Path(tmp))
+            finally:
+                connection.close()
+            summary = (Path(tmp) / "LIBRARY.md").read_text(encoding="utf-8")
+            self.assertIn("Asset occurrences: **1**", summary)
+            self.assertIn("Unique payloads: **1**", summary)
+
     def test_recovers_utf8_names_stored_without_zip_utf8_flag(self) -> None:
         original = "iPhone 紫色.png"
         mojibake = original.encode("utf-8").decode("cp437")
@@ -1294,6 +1335,15 @@ class PrivateAssetLibraryTests(unittest.TestCase):
         detection = detect_file_kind(b"\x89PNG\r\n\x1a\n" + b"0" * 20, "asset.icns")
         self.assertEqual(detection.mime, "image/png")
         self.assertEqual(detection.extension, ".png")
+
+    def test_classifies_webp_magic_and_extension_as_images(self) -> None:
+        magic = detect_file_kind(b"RIFF\x00\x00\x00\x00WEBPVP8 ", "asset.bin")
+        fallback = detect_file_kind(b"not-a-webp-header", "asset.webp")
+        for detection in (magic, fallback):
+            with self.subTest(detection=detection):
+                self.assertEqual(detection.mime, "image/webp")
+                self.assertEqual(detection.kind, "image")
+                self.assertEqual(detection.extension, ".webp")
 
     def test_classifies_common_apple_asset_roles(self) -> None:
         self.assertEqual(classify_asset_name("iPhone 12 purple.png", "image")[0], "product-render")

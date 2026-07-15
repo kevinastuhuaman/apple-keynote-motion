@@ -140,6 +140,8 @@ def detect_file_kind(head: bytes, filename: str = "") -> Detection:
         return Detection("image/icns", "image", ".icns")
     if head.startswith(b"%PDF"):
         return Detection("application/pdf", "document", ".pdf")
+    if head.startswith(b"RIFF") and head[8:12] == b"WEBP":
+        return Detection("image/webp", "image", ".webp")
     if head.startswith(b"RIFF") and head[8:12] == b"WAVE":
         return Detection("audio/wav", "audio", ".wav")
     if head.startswith(b"FORM") and head[8:12] in {b"AIFF", b"AIFC"}:
@@ -158,6 +160,8 @@ def detect_file_kind(head: bytes, filename: str = "") -> Detection:
 
     extension = Path(lower).suffix
     mime = mimetypes.guess_type(lower)[0] or "application/octet-stream"
+    if extension == ".webp":
+        return Detection("image/webp", "image", extension)
     if extension in {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".icns", ".gif", ".heic"}:
         return Detection(mime, "image", extension)
     if extension in {".mov", ".mp4", ".m4v"}:
@@ -922,7 +926,7 @@ function escapeHtml(s){return String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;'
 
 def write_summary(connection: sqlite3.Connection, output_root: Path) -> None:
     unique_objects, total_occurrences, total_bytes = connection.execute(
-        "SELECT (SELECT count(*) FROM objects), count(*), sum(size_bytes) FROM occurrences"
+        "SELECT count(DISTINCT sha256), count(*), sum(size_bytes) FROM occurrences"
     ).fetchone()
     total_bytes = int(total_bytes or 0)
     by_kind = connection.execute(

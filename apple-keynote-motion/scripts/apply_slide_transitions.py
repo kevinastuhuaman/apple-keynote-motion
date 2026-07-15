@@ -119,6 +119,16 @@ def copy_deck(source: Path, output: Path) -> None:
         shutil.copy2(source, output)
 
 
+def output_is_inside_source_package(source: Path, output: Path) -> bool:
+    if not source.is_dir():
+        return False
+    try:
+        output.relative_to(source)
+    except ValueError:
+        return False
+    return True
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--spec", type=Path, required=True)
@@ -135,6 +145,8 @@ def main() -> int:
         parser.error(f"source deck does not exist: {source}")
     if output == source:
         parser.error("source and output must differ; this tool never edits the source deck")
+    if output_is_inside_source_package(source, output):
+        parser.error("output cannot be inside a package-style source deck")
     if output.exists():
         parser.error(f"output already exists: {output}")
 
