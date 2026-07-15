@@ -215,7 +215,7 @@ Read `references/keynote-control-surface.md` before automating the UI. Re-fetch 
 - `analyze_transition_object_diffs.py`: infer adjacent-state continuity with confidence limits.
 - `analyze_text_motion_layers.py`: infer text state changes separately from builds.
 - `extract_native_build_timeline.py`: decode exact targets, phases, effects, order, start relationships, durations, delays, delivery, and compound actions for a stage map or selected slides from any recovered slide-order CSV.
-- `patch_build_start_relationship.py`: last-resort scratch-copy patcher for one exact BuildChunk start relationship; never edits in place and still requires reopen, extraction, and playback verification.
+- `patch_build_start_relationship.py`: last-resort scratch-copy patcher for one exact BuildChunk start relationship in direct or wrapped archives; never edits in place and still requires reopen, extraction, and playback verification.
 - `analyze_playback_video.py`: inspect every frame of a native movie export and produce active intervals, metrics, inferred visual-energy curves, and a contact sheet.
 - `compare_playback_motion.py`: compare corresponding rendered intervals with an explicitly scoped temporal-motion-fidelity score.
 - `audit_magic_move_export_risks.py`: report paired zero-size drawable paths that can participate in a Keynote 15.3 export assertion; treat findings as warnings, not deterministic failures.

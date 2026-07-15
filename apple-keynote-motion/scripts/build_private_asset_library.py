@@ -606,7 +606,11 @@ def deck_id(path: Path) -> str:
     name = path.stem.casefold()
     name = re.sub(r"^apple-event-", "", name)
     name = re.sub(r"\s*\([0-9]+\)$", "", name)
-    return re.sub(r"[^a-z0-9]+", "-", name).strip("-")
+    slug = re.sub(r"[^a-z0-9]+", "-", name).strip("-") or "deck"
+    path_digest = hashlib.sha256(
+        str(path.expanduser().resolve()).encode("utf-8")
+    ).hexdigest()
+    return f"{slug}-{path_digest[:12]}"
 
 
 def deck_paths(source_dir: Path, explicit: list[Path]) -> list[Path]:
@@ -913,6 +917,7 @@ def write_summary(connection: sqlite3.Connection, output_root: Path) -> None:
     unique_objects, total_occurrences, total_bytes = connection.execute(
         "SELECT (SELECT count(*) FROM objects), count(*), sum(size_bytes) FROM occurrences"
     ).fetchone()
+    total_bytes = int(total_bytes or 0)
     by_kind = connection.execute(
         "SELECT b.kind, count(*), sum(o.size_bytes) FROM occurrences o JOIN objects b ON o.sha256=b.sha256 GROUP BY b.kind ORDER BY count(*) DESC"
     ).fetchall()

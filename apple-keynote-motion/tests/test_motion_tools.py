@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -20,10 +21,13 @@ sys.path.insert(0, str(SCRIPTS))
 from apply_slide_transitions import build_script, copy_deck  # noqa: E402
 from build_private_asset_library import (  # noqa: E402
     classify_asset_name,
+    deck_id,
     detect_file_kind,
     index_package_metadata,
     recover_utf8_zip_name,
+    write_summary,
 )
+from analyze_transition_object_diffs import Diagnostics, load_objects  # noqa: E402
 from analyze_playback_video import (  # noqa: E402
     boolean_runs,
     bridge_short_gaps,
@@ -139,6 +143,105 @@ class MotionSpecTests(unittest.TestCase):
         paths = {issue.path for issue in validate(spec) if issue.severity == "error"}
         self.assertIn("$.scenes[0].builds[0].target", paths)
 
+    def test_transition_states_must_be_adjacent_slides(self) -> None:
+        spec = valid_spec()
+        scene = spec["scenes"][0]
+        scene["states"][1]["slide"] = 3
+        scene["transition"]["to_slide"] = 3
+        scene["builds"][0]["slide"] = 3
+        issues = validate(spec)
+        self.assertTrue(
+            any(
+                issue.path == "$.scenes[0].transition.to_slide"
+                and "immediately follow" in issue.message
+                for issue in issues
+            )
+        )
+
+    def test_malformed_transition_slide_value_returns_an_issue(self) -> None:
+        spec = valid_spec()
+        spec["scenes"][0]["transition"]["to_slide"] = []
+        issues = validate(spec)
+        self.assertTrue(
+            any(issue.path == "$.scenes[0].transition.to_slide" for issue in issues)
+        )
+
+    def test_relative_build_must_be_on_the_same_slide(self) -> None:
+        spec = valid_spec()
+        scene = spec["scenes"][0]
+        scene["builds"].extend(
+            [
+                {
+                    "id": "hero-in",
+                    "slide": 1,
+                    "target": "hero",
+                    "phase": "build-in",
+                    "effect": "dissolve",
+                    "duration": 0.4,
+                    "start": "after-transition",
+                    "delay": 0,
+                    "order": 1,
+                },
+                {
+                    "id": "label-follow",
+                    "slide": 2,
+                    "target": "label",
+                    "phase": "action",
+                    "effect": "move",
+                    "duration": 0.4,
+                    "start": "with-build",
+                    "relative_to": "hero-in",
+                    "delay": 0,
+                    "order": 2,
+                },
+            ]
+        )
+        issues = validate(spec)
+        self.assertTrue(
+            any(
+                issue.path == "$.scenes[0].builds[2].relative_to"
+                and "same slide" in issue.message
+                for issue in issues
+            )
+        )
+
+    def test_relative_build_must_point_to_an_earlier_order(self) -> None:
+        spec = valid_spec()
+        scene = spec["scenes"][0]
+        scene["builds"][0]["start"] = "with-build"
+        scene["builds"][0]["relative_to"] = "label-follow"
+        scene["builds"].append(
+            {
+                "id": "label-follow",
+                "slide": 2,
+                "target": "label",
+                "phase": "action",
+                "effect": "move",
+                "duration": 0.4,
+                "start": "on-click",
+                "delay": 0,
+                "order": 2,
+            }
+        )
+        issues = validate(spec)
+        self.assertTrue(
+            any(
+                issue.path == "$.scenes[0].builds[0].relative_to"
+                and "earlier build order" in issue.message
+                for issue in issues
+            )
+        )
+
+    def test_malformed_relative_build_value_returns_an_issue(self) -> None:
+        spec = valid_spec()
+        build = spec["scenes"][0]["builds"][0]
+        build["start"] = "with-build"
+        build["relative_to"] = []
+        issues = validate(spec)
+        self.assertTrue(
+            any(issue.path == "$.scenes[0].builds[0].relative_to" for issue in issues)
+        )
+
 
 class StageAlignmentTests(unittest.TestCase):
     def test_monotonic_alignment_keeps_order_and_final_page(self) -> None:
@@ -252,6 +355,12 @@ class PlaybackComparisonTests(unittest.TestCase):
         candidate = self.payload(2.0, [0.0, 0.1, 0.4, 0.4, 0.1])
         result = compare_payloads(reference, candidate, 1, 1)
         self.assertLess(result["temporal_motion_fidelity_score"], 90.0)
+
+    def test_two_static_intervals_score_full_temporal_fidelity(self) -> None:
+        payload = {"label": "static", "active_segments": [], "frame_metrics": []}
+        result = compare_payloads(payload, payload)
+        self.assertTrue(result["both_intervals_static"])
+        self.assertEqual(result["temporal_motion_fidelity_score"], 100.0)
 
 
 class MagicMoveExportRiskTests(unittest.TestCase):
@@ -382,6 +491,51 @@ class KeynoteArchiveTests(unittest.TestCase):
                 self.assertEqual(archive.read("Index/Slide.iwa"), b"slide")
                 self.assertEqual(archive.read("Data/icon.png"), b"image")
                 self.assertIn("preview.jpg", archive.namelist())
+
+
+class ObjectDatasetTests(unittest.TestCase):
+    def test_uses_document_row_dimensions_as_the_default_slide_size(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tsv = Path(tmp) / "objects.tsv"
+            fieldnames = [
+                "record",
+                "slide_number",
+                "object_type",
+                "object_index",
+                "object_name",
+                "identity_text",
+                "x",
+                "y",
+                "width",
+                "height",
+                "rotation",
+                "opacity",
+                "locked",
+                "extra",
+            ]
+            with tsv.open("w", newline="", encoding="utf-8") as stream:
+                writer = csv.DictWriter(stream, fieldnames=fieldnames, delimiter="\t")
+                writer.writeheader()
+                writer.writerow({"record": "document", "width": 1920, "height": 1080})
+                writer.writerow(
+                    {
+                        "record": "object",
+                        "slide_number": 1,
+                        "object_type": "image",
+                        "object_index": 1,
+                        "identity_text": "hero.png",
+                        "x": 0,
+                        "y": 0,
+                        "width": 100,
+                        "height": 100,
+                        "rotation": 0,
+                        "opacity": 100,
+                    }
+                )
+
+            dataset = load_objects(tsv, size_override=None, diagnostics=Diagnostics())
+            self.assertEqual(dataset.size_for(1).width, 1920)
+            self.assertEqual(dataset.size_for(1).height, 1080)
 
 
 class NativeBuildTimelineTests(unittest.TestCase):
@@ -535,6 +689,84 @@ class BuildStartPatcherTests(unittest.TestCase):
                     mode="with-build",
                 )
 
+    def test_rejects_non_index_build_members_before_opening_archive(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "source.key"
+            output = Path(tmp) / "output.key"
+            source.write_bytes(b"not an archive")
+            with self.assertRaisesRegex(ValueError, "normalized Index"):
+                patch_deck(
+                    source,
+                    output,
+                    member="Data/icon.png",
+                    chunk_identifier="42",
+                    mode="with-build",
+                )
+
+    def test_patches_a_member_inside_a_direct_archive(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "direct.key"
+            output = root / "patched.key"
+            with zipfile.ZipFile(source, "w") as archive:
+                archive.writestr("Index/Document.iwa", b"document")
+                archive.writestr("Index/Slide.iwa", b"original")
+                archive.writestr("Data/icon.png", b"image")
+
+            with patch(
+                "patch_build_start_relationship.patch_member",
+                return_value=(b"patched", {"changed": True}),
+            ):
+                report = patch_deck(
+                    source,
+                    output,
+                    member="Index/Slide.iwa",
+                    chunk_identifier="42",
+                    mode="with-build",
+                )
+
+            with zipfile.ZipFile(output) as archive:
+                self.assertEqual(archive.read("Index/Slide.iwa"), b"patched")
+                self.assertEqual(archive.read("Index/Document.iwa"), b"document")
+                self.assertEqual(archive.read("Data/icon.png"), b"image")
+            self.assertEqual(report["archive_layout"], "direct")
+
+    def test_patches_a_normalized_member_inside_wrapped_index_zip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "wrapped.key"
+            output = root / "patched.key"
+            prefix = "Event.key_backup/"
+            nested_bytes = io.BytesIO()
+            with zipfile.ZipFile(nested_bytes, "w") as nested:
+                nested.writestr("Index/Document.iwa", b"document")
+                nested.writestr("Index/Slide.iwa", b"original")
+            with zipfile.ZipFile(source, "w") as outer:
+                outer.writestr(prefix + "Index.zip", nested_bytes.getvalue())
+                outer.writestr(prefix + "Data/icon.png", b"image")
+
+            change = {"before": {"automatic": False}, "after": {"automatic": True}}
+            with patch(
+                "patch_build_start_relationship.patch_member",
+                return_value=(b"patched", change),
+            ):
+                report = patch_deck(
+                    source,
+                    output,
+                    member="Index/Slide.iwa",
+                    chunk_identifier="42",
+                    mode="with-build",
+                )
+
+            with zipfile.ZipFile(output) as outer:
+                self.assertEqual(outer.read(prefix + "Data/icon.png"), b"image")
+                with zipfile.ZipFile(
+                    io.BytesIO(outer.read(prefix + "Index.zip"))
+                ) as nested:
+                    self.assertEqual(nested.read("Index/Slide.iwa"), b"patched")
+                    self.assertEqual(nested.read("Index/Document.iwa"), b"document")
+            self.assertEqual(report["archive_layout"], "wrapped-index-zip")
+
 
 class ReferenceConsistencyTests(unittest.TestCase):
     def test_native_transition_control_reference_preserves_rare_counts(self) -> None:
@@ -585,6 +817,16 @@ class ShareabilityTests(unittest.TestCase):
         self.assertIn('application id "com.apple.Keynote"', script)
         self.assertNotIn("/Applications/Keynote", script)
 
+    def test_file_automation_binds_documents_only_by_exact_path(self) -> None:
+        for name in (
+            "dump_keynote_native_state_bulk.applescript",
+            "dump_slide_transition_settings.applescript",
+            "export_keynote_visuals.applescript",
+        ):
+            script = (SKILL_ROOT / "scripts" / name).read_text(encoding="utf-8")
+            self.assertIn("POSIX path of (file of candidate) is deckPath", script)
+            self.assertNotIn("name of candidate is expected", script)
+
 
 class CorpusSummaryTests(unittest.TestCase):
     def test_aggregates_normalized_reports(self) -> None:
@@ -626,7 +868,7 @@ class CorpusSummaryTests(unittest.TestCase):
                                 "transition": "none",
                                 "build_effects": [],
                                 "action_effects": [],
-                                "media_triggers": [],
+                                "media_triggers": ["movie-start"],
                             },
                         ],
                     }
@@ -641,10 +883,35 @@ class CorpusSummaryTests(unittest.TestCase):
             self.assertEqual(len(rows), 1)
             self.assertEqual(rows[0]["magic_move"], 1)
             self.assertEqual(rows[0]["slides_with_builds"], 1)
-            self.assertEqual(rows[0]["motion_density"], 0.5)
+            self.assertEqual(rows[0]["slides_with_media"], 1)
+            self.assertEqual(rows[0]["motion_density"], 1.0)
 
 
 class PrivateAssetLibraryTests(unittest.TestCase):
+    def test_deck_ids_disambiguate_same_named_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first = root / "first" / "Event.key"
+            second = root / "second" / "Event.key"
+            self.assertNotEqual(deck_id(first), deck_id(second))
+            self.assertEqual(deck_id(first), deck_id(first))
+
+    def test_empty_library_summary_reports_zero_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            connection = sqlite3.connect(":memory:")
+            try:
+                connection.executescript(
+                    """
+                    CREATE TABLE objects (sha256 TEXT PRIMARY KEY, kind TEXT);
+                    CREATE TABLE occurrences (deck_id TEXT, sha256 TEXT, size_bytes INTEGER);
+                    """
+                )
+                write_summary(connection, Path(tmp))
+            finally:
+                connection.close()
+            summary = (Path(tmp) / "LIBRARY.md").read_text(encoding="utf-8")
+            self.assertIn("Indexed occurrence bytes: **0**", summary)
+
     def test_recovers_utf8_names_stored_without_zip_utf8_flag(self) -> None:
         original = "iPhone 紫色.png"
         mojibake = original.encode("utf-8").decode("cp437")

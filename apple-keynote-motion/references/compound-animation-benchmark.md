@@ -86,7 +86,7 @@ Keynote duration fields must be committed with Return or by moving focus through
 4. Export a 60 fps movie.
 5. Inspect every frame and transient Build Out state.
 
-If a required `With Build` relationship cannot be set reliably through the inspector, `patch_build_start_relationship.py` may be used only on a new scratch output. The source and output paths must differ, exactly one native BuildChunk record must match, and the result must pass the reopen, native-extraction, and playback gates above.
+If a required `With Build` relationship cannot be set reliably through the inspector, `patch_build_start_relationship.py` may be used only on a new scratch output. It supports direct archives and wrapped `Index.zip` archives. The source and output paths must differ, exactly one native BuildChunk record must match, and the result must pass the reopen, native-extraction, and playback gates above.
 
 ## Claim Boundary
 

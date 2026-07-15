@@ -161,10 +161,20 @@ def validate(spec: Any) -> list[Issue]:
                     require(False, "warning", f"{transition_path}.delay", "On-click transitions normally use zero delay.", issues)
                 from_slide = transition.get("from_slide")
                 to_slide = transition.get("to_slide")
-                require(from_slide in state_by_slide, "error", f"{transition_path}.from_slide", "from_slide must name a scene state.", issues)
-                require(to_slide in state_by_slide, "error", f"{transition_path}.to_slide", "to_slide must name a scene state.", issues)
+                has_from_state = isinstance(from_slide, int) and from_slide in state_by_slide
+                has_to_state = isinstance(to_slide, int) and to_slide in state_by_slide
+                require(has_from_state, "error", f"{transition_path}.from_slide", "from_slide must name a scene state.", issues)
+                require(has_to_state, "error", f"{transition_path}.to_slide", "to_slide must name a scene state.", issues)
+                if has_from_state and has_to_state:
+                    require(
+                        to_slide == from_slide + 1,
+                        "error",
+                        f"{transition_path}.to_slide",
+                        "to_slide must immediately follow from_slide in the deck.",
+                        issues,
+                    )
 
-                if effect == "magic-move" and from_slide in state_by_slide and to_slide in state_by_slide:
+                if effect == "magic-move" and has_from_state and has_to_state:
                     continuity = object_ids(state_by_slide[from_slide]) & object_ids(state_by_slide[to_slide])
                     require(bool(continuity), "error", transition_path, "Magic Move requires at least one stable object id across both states.", issues)
                     mm = transition.get("magic_move")
@@ -212,8 +222,8 @@ def validate(spec: Any) -> list[Issue]:
             if start in {"with-build", "after-build"}:
                 require(isinstance(build.get("relative_to"), str), "error", f"{build_path}.relative_to", "Relative builds must name another build id.", issues)
 
-        build_ids = {
-            build.get("id")
+        build_by_id = {
+            build.get("id"): build
             for build in builds
             if isinstance(build, dict) and isinstance(build.get("id"), str)
         }
@@ -222,8 +232,30 @@ def validate(spec: Any) -> list[Issue]:
                 continue
             build_path = f"{path}.builds[{build_index}]"
             relative_to = build.get("relative_to")
-            require(relative_to in build_ids, "error", f"{build_path}.relative_to", "Relative build id does not exist.", issues)
+            has_relative_build = (
+                isinstance(relative_to, str) and relative_to in build_by_id
+            )
+            require(has_relative_build, "error", f"{build_path}.relative_to", "Relative build id does not exist.", issues)
             require(relative_to != build.get("id"), "error", f"{build_path}.relative_to", "A build cannot be relative to itself.", issues)
+            relative_build = build_by_id.get(relative_to) if has_relative_build else None
+            if isinstance(relative_build, dict):
+                require(
+                    relative_build.get("slide") == build.get("slide"),
+                    "error",
+                    f"{build_path}.relative_to",
+                    "Relative builds must be on the same slide.",
+                    issues,
+                )
+                relative_order = relative_build.get("order")
+                current_order = build.get("order")
+                if isinstance(relative_order, int) and isinstance(current_order, int):
+                    require(
+                        relative_order < current_order,
+                        "error",
+                        f"{build_path}.relative_to",
+                        "Relative builds must point to an earlier build order.",
+                        issues,
+                    )
 
     return issues
 

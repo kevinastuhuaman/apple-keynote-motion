@@ -502,6 +502,7 @@ def load_objects(
     objects: defaultdict[int, list[dict[str, Any]]] = defaultdict(list)
     slide_settings: dict[int, dict[str, str]] = {}
     embedded_sizes: dict[int, SlideSize] = {}
+    document_size: SlideSize | None = None
     object_count = 0
 
     for line_number, row in rows:
@@ -512,6 +513,14 @@ def load_objects(
                 f"line {line_number}: object TSV row has no record type; skipping row",
             )
             diagnostics.counts["skipped_object_tsv_rows"] += 1
+            continue
+        if record == "document":
+            document_size = extract_slide_size(
+                row,
+                {},
+                line_number=line_number,
+                diagnostics=diagnostics,
+            )
             continue
         slide_number = parse_positive_int(
             row.get("slide_number"),
@@ -630,7 +639,9 @@ def load_objects(
         unique_sizes = sorted(
             set(embedded_sizes.values()), key=lambda size: (size.width, size.height)
         )
-        default_size = unique_sizes[0] if len(unique_sizes) == 1 else None
+        default_size = document_size
+        if default_size is None and len(unique_sizes) == 1:
+            default_size = unique_sizes[0]
 
     for slide_objects in objects.values():
         slide_objects.sort(key=object_sort_key)

@@ -44,6 +44,7 @@ def build_rows(corpus_root: Path) -> list[dict[str, Any]]:
                 slide.get("transition") not in {None, "none", "unknown"}
                 or slide.get("build_effects")
                 or slide.get("action_effects")
+                or slide.get("media_triggers")
             )
             for slide in slides
         )

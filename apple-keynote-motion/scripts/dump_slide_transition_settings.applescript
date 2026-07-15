@@ -38,23 +38,12 @@ on emitLine(fieldList)
 	return (my joinFields(fieldList) & linefeed)
 end emitLine
 
-on pathBasename(posixPath)
-	set oldDelimiters to AppleScript's text item delimiters
-	set AppleScript's text item delimiters to "/"
-	set pathParts to text items of posixPath
-	set AppleScript's text item delimiters to oldDelimiters
-	return item -1 of pathParts
-end pathBasename
-
-on documentForPath(deckPath, expectedName)
+on documentForPath(deckPath)
 	using terms from application id "com.apple.Keynote"
 		tell application id "com.apple.Keynote"
 			repeat with candidate in documents
 				try
 					if POSIX path of (file of candidate) is deckPath then return candidate
-				end try
-				try
-					if name of candidate is expectedName then return candidate
 				end try
 			end repeat
 		end tell
@@ -73,15 +62,14 @@ on run argv
 				if deckPath is "" then
 					set docRef to front document
 				else
-					set expectedName to my pathBasename(deckPath)
-					set docRef to my documentForPath(deckPath, expectedName)
+					set docRef to my documentForPath(deckPath)
 					if docRef is missing value then
 						open (POSIX file deckPath)
 						set openedHere to true
 					end if
 					set waitCount to 0
 					repeat while docRef is missing value and waitCount is less than 600
-						set docRef to my documentForPath(deckPath, expectedName)
+						set docRef to my documentForPath(deckPath)
 						if docRef is missing value then delay 1
 						set waitCount to waitCount + 1
 					end repeat

@@ -111,11 +111,15 @@ def compare_payloads(
         compare_segments(reference_payload, candidate_payload, reference_segments[index], candidate_segments[index])
         for index in range(matched_count)
     ]
-    segment_average = (
-        sum(row["segment_motion_fidelity_score"] for row in comparisons) / len(comparisons)
-        if comparisons
-        else 0.0
-    )
+    both_static = maximum_count == 0
+    if both_static:
+        segment_average = 100.0
+    elif comparisons:
+        segment_average = sum(
+            row["segment_motion_fidelity_score"] for row in comparisons
+        ) / len(comparisons)
+    else:
+        segment_average = 0.0
     overall = 0.85 * segment_average + 0.15 * structure_score * 100
     return {
         "schema_version": "1.0",
@@ -147,6 +151,7 @@ def compare_payloads(
         "reference_segment_count": len(reference_segments),
         "candidate_segment_count": len(candidate_segments),
         "matched_segment_count": matched_count,
+        "both_intervals_static": both_static,
         "segment_structure_score": round(structure_score * 100, 3),
         "segments": comparisons,
         "temporal_motion_fidelity_score": round(overall, 3),

@@ -13,7 +13,10 @@ import argparse
 import hashlib
 import json
 import zipfile
+from io import BytesIO
 from pathlib import Path
+
+from keynote_archive import KeynoteArchive
 
 
 START_FLAGS = {
@@ -101,22 +104,47 @@ def patch_deck(
         raise ValueError("Output must be a new deck path; in-place edits are disabled")
     if output.exists():
         raise FileExistsError(f"Refusing to overwrite existing output: {output}")
+    if not member.startswith("Index/"):
+        raise ValueError("BuildChunk member must be a normalized Index/*.iwa path")
 
-    with zipfile.ZipFile(source, "r") as source_zip:
-        if member not in source_zip.namelist():
+    with KeynoteArchive(source) as archive:
+        if member not in archive.namelist():
             raise KeyError(f"Archive member not found: {member}")
         patched_member, change = patch_member(
-            source_zip.read(member),
+            archive.read(member),
             member=member,
             chunk_identifier=chunk_identifier,
             mode=mode,
         )
+        archive_layout = archive.layout
+        package_prefix = archive.package_prefix
 
-        output.parent.mkdir(parents=True, exist_ok=True)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(source, "r") as source_zip:
+        replacements = {member: patched_member}
+        if archive_layout == "wrapped-index-zip":
+            index_member = f"{package_prefix}Index.zip"
+            nested_output = BytesIO()
+            with zipfile.ZipFile(
+                BytesIO(source_zip.read(index_member)), "r"
+            ) as nested_source:
+                with zipfile.ZipFile(nested_output, "w") as nested_destination:
+                    nested_destination.comment = nested_source.comment
+                    for info in nested_source.infolist():
+                        payload = (
+                            patched_member
+                            if info.filename == member
+                            else nested_source.read(info)
+                        )
+                        nested_destination.writestr(info, payload)
+            replacements = {index_member: nested_output.getvalue()}
+
         with zipfile.ZipFile(output, "w") as output_zip:
             output_zip.comment = source_zip.comment
             for info in source_zip.infolist():
-                payload = patched_member if info.filename == member else source_zip.read(info)
+                payload = replacements.get(info.filename)
+                if payload is None:
+                    payload = source_zip.read(info)
                 output_zip.writestr(info, payload)
 
     return {
@@ -125,6 +153,7 @@ def patch_deck(
         "member": member,
         "chunk_identifier": chunk_identifier,
         "mode": mode,
+        "archive_layout": archive_layout,
         "change": change,
         "source_sha256": sha256(source),
         "output_sha256": sha256(output),

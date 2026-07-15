@@ -98,6 +98,7 @@ Never present `inferred` or `recommended` values as facts about a reference deck
 For each transition, record:
 
 - source and destination slide numbers,
+- an adjacent source/destination pair because Keynote stores the transition on the source slide,
 - effect, duration, advance mode, and delay,
 - Magic Move match mode, fade-unmatched setting, and acceleration,
 - continuity, entry, exit, and intentional off-canvas objects.
@@ -109,7 +110,7 @@ For each build or action, record:
 - effect and effect-specific parameters,
 - order,
 - start relationship (`after-transition`, `on-click`, `with-build`, or `after-build`),
-- relative build when applicable,
+- an earlier relative build on the same slide when applicable,
 - duration, delay, acceleration, direction, and delivery when the UI exposes them.
 
 Run:

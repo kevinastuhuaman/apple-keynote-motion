@@ -6,28 +6,13 @@
 -- mode: images (default), stages, or both
 -- The caller must create <out_dir> before running this script.
 
-on pathBasename(posixPath)
-	set oldDelimiters to AppleScript's text item delimiters
-	set AppleScript's text item delimiters to "/"
-	set pathParts to text items of posixPath
-	set AppleScript's text item delimiters to oldDelimiters
-	return item -1 of pathParts
-end pathBasename
-
-on documentForPath(deckPath, expectedName)
-	set expectedStem to expectedName
-	if expectedName ends with ".key" and (length of expectedName) is greater than 4 then
-		set expectedStem to text 1 thru -5 of expectedName
-	end if
+on documentForPath(deckPath)
 	using terms from application id "com.apple.Keynote"
 		tell application id "com.apple.Keynote"
 			repeat with candidate in documents
 				try
 					if POSIX path of (file of candidate) is deckPath then return candidate
 				end try
-			try
-					if name of candidate is expectedName or name of candidate is expectedStem then return candidate
-			end try
 			end repeat
 		end tell
 	end using terms from
@@ -45,11 +30,10 @@ on run argv
 	if (count of argv) is greater than or equal to 3 then set exportMode to item 3 of argv
 	if exportMode is not in {"images", "stages", "both"} then error "mode must be images, stages, or both"
 
-	set expectedName to my pathBasename(deckPath)
 	set slideImagesDir to outputRoot & "/slide-images"
 	set allStagesPdf to outputRoot & "/all-stages.pdf"
 
-	set docRef to my documentForPath(deckPath, expectedName)
+	set docRef to my documentForPath(deckPath)
 	set openedHere to false
 
 	using terms from application id "com.apple.Keynote"
@@ -62,7 +46,7 @@ on run argv
 
 				set waitCount to 0
 				repeat while docRef is missing value and waitCount is less than 1800
-					set docRef to my documentForPath(deckPath, expectedName)
+					set docRef to my documentForPath(deckPath)
 					if docRef is missing value then delay 1
 					set waitCount to waitCount + 1
 				end repeat
